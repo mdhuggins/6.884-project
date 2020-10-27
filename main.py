@@ -1,5 +1,7 @@
+import argparse
 import os
 import torch
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from torch import nn
 import torch.nn.functional as F
 from torchvision.datasets import MNIST
@@ -9,6 +11,7 @@ import pytorch_lightning as pl
 from torch.utils.data import random_split
 
 from data import AskUbuntuTrainDataset
+from utils import CheckpointEveryNSteps
 
 
 class LitAutoEncoder(pl.LightningModule):
@@ -49,9 +52,28 @@ class LitAutoEncoder(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
 
+parser = argparse.ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
 
-# dataset = MNIST(os.getcwd(), download=True, transform=transforms.ToTensor())
-train_loader = DataLoader(AskUbuntuTrainDataset())
+parser.add_argument('--save_iters', type=int, default=500,
+                    help='The amount of steps to save a model')
+parser.add_argument('--data_dir', default="./data/askubuntu/",
+                    help='The root of the data directory for the askubuntu dataset')
+parser.add_argument('--model_dir', default="./models/",
+                    help='The directory to save trained/checkpointed models')
+parser.add_argument('--model_save_name', default="test_name",
+                    help='The name to save the model with')
+parser.add_argument('--model_type', default="bert",
+                    help='The type of model that we use for evaluation')
+
+args = parser.parse_args()
+
+data_dir = args.data_dir
+model_name = args.model_save_name
+model_type = args.model_type
+model_dir = args.model_dir
+save_iters = args.save_iters
+
+train_loader = DataLoader(AskUbuntuTrainDataset(root_dir=data_dir))
 
 # init model
 autoencoder = LitAutoEncoder()
@@ -73,15 +95,18 @@ autoencoder = LitAutoEncoder()
 # )
 
 # TODO Logging
-# TODO Early stopping
 # TODO auto lr finder
 # TODO BERT
-# TODO checkpoints
 # TODO Hyperparameters
 # TODO model dirs
 # tODO scripts
 # todo tensorboard
 
-trainer = pl.Trainer()
 
+
+# checkpoints
+checkpoints = CheckpointEveryNSteps(save_iters)
+#Early stopping #TODO model must implement a logging for 'val_loss'
+early_stopping = EarlyStopping(monitor='val_loss')
+trainer = pl.Trainer(callbacks=[checkpoints,early_stopping])
 trainer.fit(autoencoder, train_loader)

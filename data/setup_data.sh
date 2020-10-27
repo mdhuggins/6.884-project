@@ -1,5 +1,4 @@
 cd ..
-git submodule init
-git submodule update
+git submodule update --init --recursive
 cd data/askubuntu
-tar -xvf text_tokenized.txt.gz
+gunzip -vf text_tokenized.txt.gz
