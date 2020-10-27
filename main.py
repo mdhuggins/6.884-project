@@ -7,6 +7,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from torch.utils.data import random_split
+from transformers import BertModel, BertConfig
 
 from data import AskUbuntuTrainDataset
 
@@ -15,16 +16,13 @@ class LitAutoEncoder(pl.LightningModule):
 
     def __init__(self):
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(28*28, 64),
-            nn.ReLU(),
-            nn.Linear(64, 3)
+        self.bert = BertModel.from_pretrained(
+            "bert-base-uncased", # Use the 12-layer BERT model, with an uncased vocab.
+            output_attentions = False, # Whether the model returns attentions weights.
+            output_hidden_states = False, # Whether the model returns all hidden-states.
         )
-        self.decoder = nn.Sequential(
-            nn.Linear(3, 64),
-            nn.ReLU(),
-            nn.Linear(64, 28*28)
-        )
+
+        self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
 
     def forward(self, x):
         # in lightning, forward defines the prediction/inference actions
@@ -32,13 +30,18 @@ class LitAutoEncoder(pl.LightningModule):
         return embedding
 
     def training_step(self, batch, batch_idx):
-        print(batch)
 
-        labels = batch['label']
+        labels = batch['label'].float()
 
-        pred = torch.FloatTensor([1]*len(labels))
+        query_dict = batch['query_enc_dict']
+        response_dict = batch['response_enc_dict']
 
-        loss = F.mse_loss(pred, labels)
+        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'], token_type_ids=query_dict['token_type_ids'], attention_mask=query_dict['attention_mask'])
+        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'], attention_mask=response_dict['attention_mask'])
+
+        preds = self.cosine_sim(query_pooler_output, response_pooler_output)
+
+        loss = F.mse_loss(preds, labels)
 
         # Logging to TensorBoard by default
         self.log('train_loss', loss)
@@ -51,7 +54,7 @@ class LitAutoEncoder(pl.LightningModule):
 
 
 # dataset = MNIST(os.getcwd(), download=True, transform=transforms.ToTensor())
-train_loader = DataLoader(AskUbuntuTrainDataset())
+train_loader = DataLoader(AskUbuntuTrainDataset(toy_n=20, toy_pad=20), batch_size=16, shuffle=True)
 
 # init model
 autoencoder = LitAutoEncoder()
@@ -73,7 +76,9 @@ autoencoder = LitAutoEncoder()
 # )
 
 # TODO Logging
-# TODO Early stopping
+# TODO batch size param
+# TODO Save encodings
+# TODO Early stopping or epochs?
 # TODO auto lr finder
 # TODO BERT
 # TODO checkpoints

@@ -129,3 +129,5 @@ dmypy.json
 .pyre/
 
 data/askubuntu-master
+lightning_logs/
+*.DS_Store

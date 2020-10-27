@@ -1,6 +1,7 @@
 import random
 
 import torch
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 from tqdm import tqdm
@@ -10,11 +11,13 @@ tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=Tru
 
 class AskUbuntuTrainDataset(Dataset):
 
-    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, use_bert_tokenizer=True):
+    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, use_bert_tokenizer=True, toy_n=None, toy_pad=None):
         self.use_bert_tokenizer = use_bert_tokenizer
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
         self.pad_len = 0
+
+        print("Loading training data...")
 
         # Load token sequences
         with open(f"{self.root_dir}/text_tokenized.txt", "r") as f:
@@ -39,7 +42,10 @@ class AskUbuntuTrainDataset(Dataset):
         # Convert into triples
         triples = []  # Each triple is (query id, candidate id, label (1 for correct, else 0))
 
-        for query_id, cands in train_dict.items():
+        if toy_n:
+                print(f"TOY DATASET: Only training on {toy_n} queries")
+
+        for query_id, cands in list(train_dict.items())[:toy_n] if toy_n else train_dict.items():
             pos, all_neg = cands
 
             neg = random.sample(all_neg, min(100, self.neg_pos_ratio*len(pos)))
@@ -50,15 +56,21 @@ class AskUbuntuTrainDataset(Dataset):
             for neg_id in neg:
                 triples.append((query_id, neg_id, 0))
 
-        # Set padding length to longest example
+        # Set padding length to 95 percentile length
+        lens = []
         for idx in range(len(triples)):
             query_id, response_id, label = triples[idx]
 
             query = self.combine_title_body(query_id)
             response = self.combine_title_body(response_id)
 
-            self.pad_len = max(self.pad_len, len(query.split()))
-            self.pad_len = max(self.pad_len, len(response.split()))
+            lens.append(len(query.split()))
+            lens.append(len(response.split()))
+
+        self.pad_len = int(np.percentile(lens, 95)) if not toy_pad else toy_pad
+
+        if toy_pad:
+            print(f"TOY DATASET: Only padding to {toy_pad} tokens")
 
         # Embed/pad/etc.
         self.examples = []
@@ -92,12 +104,13 @@ class AskUbuntuTrainDataset(Dataset):
                 raise NotImplementedError()
 
             sample = {
-                "query_enc_dict": query_enc_dict,
-                "response_enc_dict": response_enc_dict,
+                "query_enc_dict": dict([(k, torch.squeeze(v)) for k, v in query_enc_dict.items()]),
+                "response_enc_dict": dict([(k, torch.squeeze(v)) for k, v in response_enc_dict.items()]),
                 "label": label
             }
 
             self.examples.append(sample)
+
 
     def __len__(self):
         return len(self.examples)
