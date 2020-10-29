@@ -82,7 +82,7 @@ class AskUbuntuTrainDataset(Dataset):
             print("Checking if cache...")
             if os.path.exists(train_cache_file):
                 print("Cache found",train_cache_file,"loading it...")
-                self.examples = pickle.load(open(train_cache_file))
+                self.examples = pickle.load(open(train_cache_file,'rb'))
                 return
 
         print("Tokenizing training set with BERT tokenizer...")
@@ -120,7 +120,8 @@ class AskUbuntuTrainDataset(Dataset):
             }
 
             self.examples.append(sample)
-        pickle.dump(open(train_cache_file,"wb"),self.examples)
+        if train_cache_file is not None:
+            pickle.dump(self.examples,open(train_cache_file,"wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -145,7 +146,7 @@ class AskUbuntuDevDataset(Dataset):
         self.neg_pos_ratio = neg_pos_ratio
         self.pad_len = 128
         if cache_dir is not None:
-            val_cache_file = os.path.join(cache_dir, "training_data.pkl")
+            val_cache_file = os.path.join(cache_dir, "validation_data.pkl")
 
         # Load token sequences
         with open(f"{self.root_dir}/text_tokenized.txt", "r") as f:
@@ -174,7 +175,7 @@ class AskUbuntuDevDataset(Dataset):
             print("Checking if cache...")
             if os.path.exists(val_cache_file):
                 print("Cache found",val_cache_file,"loading it...")
-                self.examples = pickle.load(open(val_cache_file))
+                self.examples = pickle.load(open(val_cache_file,'rb'))
                 return
         print("Tokenizing training set with BERT tokenizer...")
         for idx in tqdm(range(len(self.tuples))):
@@ -206,7 +207,8 @@ class AskUbuntuDevDataset(Dataset):
                     "similarity": sim_score[idx_id]
                 }
                 self.examples.append(sample)
-        pickle.dump(open(val_cache_file,"wb"), self.examples)
+        if val_cache_file is not None:
+            pickle.dump(self.examples,open(val_cache_file,"wb"))
 
     def __len__(self):
         return len(self.examples)

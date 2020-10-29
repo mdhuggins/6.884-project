@@ -45,8 +45,11 @@ model_dir = args.model_dir
 save_iters = args.save_iters
 train_batch_size = args.train_batch_size
 val_batch_size = args.val_batch_size
-train_loader = DataLoader(AskUbuntuTrainDataset(toy_n=20, toy_pad=20, root_dir=data_dir), batch_size=train_batch_size, shuffle=True)
-val_loader = DataLoader(AskUbuntuDevDataset(root_dir=data_dir), batch_size=16)
+cache_dir = args.cache_dir
+if cache_dir is not None:
+    os.makedirs(cache_dir,exist_ok=True)
+train_loader = DataLoader(AskUbuntuTrainDataset(toy_n=20, toy_pad=20, root_dir=data_dir,cache_dir=cache_dir), batch_size=train_batch_size, shuffle=True)
+val_loader = DataLoader(AskUbuntuDevDataset(root_dir=data_dir,cache_dir=cache_dir), batch_size=16)
 # init model
 autoencoder = LitBertModel()
 
