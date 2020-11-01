@@ -1,19 +1,22 @@
 import os
 import pickle
 import random
+from typing import Dict
 
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizerFast
 from tqdm import tqdm
+import pytorch_lightning as pl
 
 tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased', do_lower_case=True)
 
 
 class AskUbuntuTrainDataset(Dataset):
 
-    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, use_bert_tokenizer=True, toy_n=None, toy_pad=None, cache_dir=None):
+    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, use_bert_tokenizer=True, toy_n=None,
+                 toy_pad=None, cache_dir=None):
         self.use_bert_tokenizer = use_bert_tokenizer
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
@@ -47,12 +50,12 @@ class AskUbuntuTrainDataset(Dataset):
         triples = []  # Each triple is (query id, candidate id, label (1 for correct, else 0))
 
         if toy_n:
-                print(f"TOY DATASET: Only training on {toy_n} queries")
+            print(f"TOY DATASET: Only training on {toy_n} queries")
 
         for query_id, cands in list(train_dict.items())[:toy_n] if toy_n else train_dict.items():
             pos, all_neg = cands
 
-            neg = random.sample(all_neg, min(100, self.neg_pos_ratio*len(pos)))
+            neg = random.sample(all_neg, min(100, self.neg_pos_ratio * len(pos)))
 
             for pos_id in pos:
                 triples.append((query_id, pos_id, 1))
@@ -81,8 +84,8 @@ class AskUbuntuTrainDataset(Dataset):
         if cache_dir is not None:
             print("Checking if cache...")
             if os.path.exists(train_cache_file):
-                print("Cache found",train_cache_file,"loading it...")
-                self.examples = pickle.load(open(train_cache_file,'rb'))
+                print("Cache found", train_cache_file, "loading it...")
+                self.examples = pickle.load(open(train_cache_file, 'rb'))
                 return
 
         print("Tokenizing training set with BERT tokenizer...")
@@ -98,6 +101,7 @@ class AskUbuntuTrainDataset(Dataset):
                     add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
                     max_length=self.pad_len,  # Pad & truncate all sentences.
                     pad_to_max_length=True,
+                    truncation=True,
                     return_attention_mask=True,  # Construct attn. masks.
                     return_tensors='pt',  # Return pytorch tensors.
                 )
@@ -107,6 +111,7 @@ class AskUbuntuTrainDataset(Dataset):
                     add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
                     max_length=self.pad_len,  # Pad & truncate all sentences.
                     pad_to_max_length=True,
+                    truncation=True,
                     return_attention_mask=True,  # Construct attn. masks.
                     return_tensors='pt',  # Return pytorch tensors.
                 )
@@ -121,7 +126,7 @@ class AskUbuntuTrainDataset(Dataset):
 
             self.examples.append(sample)
         if train_cache_file is not None:
-            pickle.dump(self.examples,open(train_cache_file,"wb"))
+            pickle.dump(self.examples, open(train_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -139,14 +144,17 @@ class AskUbuntuTrainDataset(Dataset):
         return " ".join(query_title_tokens) + "\t" + " ".join(query_body_tokens)
 
 
-class AskUbuntuDevDataset(Dataset):
+class AskUbuntuDevTestDataset(Dataset):
 
-    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20,cache_dir=None):
+    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, cache_dir=None, test=False):
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
         self.pad_len = 128
         if cache_dir is not None:
-            val_cache_file = os.path.join(cache_dir, "validation_data.pkl")
+            if not test:
+                val_cache_file = os.path.join(cache_dir, "validation_data.pkl")
+            else:
+                val_cache_file = os.path.join(cache_dir, "test_data.pkl")
 
         # Load token sequences
         with open(f"{self.root_dir}/text_tokenized.txt", "r") as f:
@@ -159,9 +167,12 @@ class AskUbuntuDevDataset(Dataset):
             for line in lines])
 
         # Load dev
-        with open(f"{self.root_dir}/dev.txt", "r") as f:
-            lines = f.readlines()
-
+        if not test:
+            with open(f"{self.root_dir}/dev.txt", "r") as f:
+                lines = f.readlines()
+        else:
+            with open(f"{self.root_dir}/test.txt", "r") as f:
+                lines = f.readlines()
         # Each element is query id, positive ids, candidate ids, similarity scores
         self.tuples = [
             (int(line.split("\t")[0]),
@@ -174,8 +185,8 @@ class AskUbuntuDevDataset(Dataset):
         if cache_dir is not None:
             print("Checking if cache...")
             if os.path.exists(val_cache_file):
-                print("Cache found",val_cache_file,"loading it...")
-                self.examples = pickle.load(open(val_cache_file,'rb'))
+                print("Cache found", val_cache_file, "loading it...")
+                self.examples = pickle.load(open(val_cache_file, 'rb'))
                 return
         print("Tokenizing training set with BERT tokenizer...")
         for idx in tqdm(range(len(self.tuples))):
@@ -184,6 +195,7 @@ class AskUbuntuDevDataset(Dataset):
             query_enc_dict = tokenizer.encode_plus(
                 query,  # Sentence to encode.
                 add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
+                truncation=True,
                 max_length=self.pad_len,  # Pad & truncate all sentences.
                 pad_to_max_length=True,
                 return_attention_mask=True,  # Construct attn. masks.
@@ -194,6 +206,7 @@ class AskUbuntuDevDataset(Dataset):
                 response_enc_dict = tokenizer.encode_plus(
                     response,  # Sentence to encode.
                     add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
+                    truncation=True,
                     max_length=self.pad_len,  # Pad & truncate all sentences.
                     pad_to_max_length=True,
                     return_attention_mask=True,  # Construct attn. masks.
@@ -208,7 +221,7 @@ class AskUbuntuDevDataset(Dataset):
                 }
                 self.examples.append(sample)
         if val_cache_file is not None:
-            pickle.dump(self.examples,open(val_cache_file,"wb"))
+            pickle.dump(self.examples, open(val_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -223,3 +236,41 @@ class AskUbuntuDevDataset(Dataset):
 
         # TODO Better combination method?
         return " ".join(query_title_tokens) + "\t" + " ".join(query_body_tokens)
+
+
+class AskUbuntuDataModule(pl.LightningDataModule):
+
+    def __init__(self, data_dir, batch_size, cache_dir=None):
+        super().__init__()
+        self.root_dir = data_dir
+        self.batch_size = batch_size
+        self.cache_dir = cache_dir
+
+    def transfer_batch_to_device(self, batch, device):
+        # print("### DEVICE CHECK", device)
+        for k in batch.keys():
+            if isinstance(batch[k],Dict):
+                for i in batch[k].keys():
+                    batch[k][i] = batch[k][i].to(device)
+            else:
+                batch[k] = batch[k].to(device)
+        return batch
+
+    def setup(self, stage=None):
+        print("Setup is done in the datasets?")
+        return None
+
+    def train_dataloader(self):
+        return DataLoader(
+            AskUbuntuTrainDataset(toy_n=300, toy_pad=128, root_dir=self.root_dir, cache_dir=self.cache_dir),
+            batch_size=self.batch_size, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(
+            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False),
+            batch_size=self.batch_size)
+
+    def test_dataloader(self):
+        return DataLoader(
+            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True),
+            batch_size=self.batch_size)
