@@ -20,6 +20,8 @@ parser = ArgumentParser(description='Train a model to do information retrieval o
 
 parser.add_argument('--save_iters', type=int, default=500,
                     help='The amount of steps to save a model')
+parser.add_argument('--epochs', type=int, default=5,
+                    help='The amount of epochs to run during training')
 parser.add_argument('--data_dir', default="./data/askubuntu/",
                     help='The root of the data directory for the askubuntu dataset')
 parser.add_argument('--model_dir', default="./models/",
@@ -48,9 +50,10 @@ train_batch_size = args.train_batch_size
 val_batch_size = args.val_batch_size
 cache_dir = args.cache_dir
 use_gpu = args.use_gpu
+epochs = args.epochs
 if cache_dir is not None:
     os.makedirs(cache_dir, exist_ok=True)
-datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,cache_dir=cache_dir)
+datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,cache_dir=cache_dir,num_workers=4)
 # init model
 autoencoder = LitBertModel()
 
@@ -88,6 +91,6 @@ checkpoints = CheckpointEveryNSteps(save_iters)
 # Early stopping #TODO model must implement a logging for 'val_loss'
 early_stopping = EarlyStopping(monitor='val_loss')
 trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
-                     auto_select_gpus=True,max_epochs=4,val_check_interval=1.0)
+                     auto_select_gpus=True,max_epochs=epochs,val_check_interval=1.0,logger=tb_logger)
 trainer.fit(autoencoder,datamodule=datamodule)
 trainer.test(datamodule=datamodule)

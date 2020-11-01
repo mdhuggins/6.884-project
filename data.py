@@ -152,8 +152,10 @@ class AskUbuntuDevTestDataset(Dataset):
         self.pad_len = 128
         if cache_dir is not None:
             if not test:
+                print("Loading validation cache")
                 val_cache_file = os.path.join(cache_dir, "validation_data.pkl")
             else:
+                print("Loading test cache")
                 val_cache_file = os.path.join(cache_dir, "test_data.pkl")
 
         # Load token sequences
@@ -168,9 +170,11 @@ class AskUbuntuDevTestDataset(Dataset):
 
         # Load dev
         if not test:
+            print("Loading dev data")
             with open(f"{self.root_dir}/dev.txt", "r") as f:
                 lines = f.readlines()
         else:
+            print("Loading test data")
             with open(f"{self.root_dir}/test.txt", "r") as f:
                 lines = f.readlines()
         # Each element is query id, positive ids, candidate ids, similarity scores
@@ -221,6 +225,7 @@ class AskUbuntuDevTestDataset(Dataset):
                 }
                 self.examples.append(sample)
         if val_cache_file is not None:
+            print("Dumping to",val_cache_file)
             pickle.dump(self.examples, open(val_cache_file, "wb"))
 
     def __len__(self):
@@ -240,11 +245,12 @@ class AskUbuntuDevTestDataset(Dataset):
 
 class AskUbuntuDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, batch_size, cache_dir=None):
+    def __init__(self, data_dir, batch_size, cache_dir=None,num_workers=0):
         super().__init__()
         self.root_dir = data_dir
         self.batch_size = batch_size
         self.cache_dir = cache_dir
+        self.num_workers = num_workers
 
     def transfer_batch_to_device(self, batch, device):
         # print("### DEVICE CHECK", device)
@@ -263,14 +269,14 @@ class AskUbuntuDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             AskUbuntuTrainDataset(toy_n=300, toy_pad=128, root_dir=self.root_dir, cache_dir=self.cache_dir),
-            batch_size=self.batch_size, shuffle=True)
+            batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers)
 
     def val_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False),
-            batch_size=self.batch_size)
+            batch_size=self.batch_size,num_workers=self.num_workers)
 
     def test_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True),
-            batch_size=self.batch_size)
+            batch_size=self.batch_size,num_workers=self.num_workers)
