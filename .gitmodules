@@ -1,3 +1,6 @@
 [submodule "data/askubuntu"]
 	path = data/askubuntu
 	url = https://github.com/taolei87/askubuntu.git
+[submodule "models/kb"]
+	path = models/kb
+	url = https://github.com/allenai/kb.git

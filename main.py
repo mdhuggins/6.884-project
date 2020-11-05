@@ -13,9 +13,9 @@ from transformers import BertModel, BertConfig
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data import AskUbuntuDataModule
-from models import LitBertModel
+from models import LitKnowBERTModel,LitBertModel
 from utils import CheckpointEveryNSteps
-
+torch.autograd.set_detect_anomaly(True)
 parser = ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
 
 parser.add_argument('--save_iters', type=int, default=500,
@@ -30,14 +30,16 @@ parser.add_argument('--model_save_name', default="test_name",
                     help='The name to save the model with')
 parser.add_argument('--model_type', default="bert",
                     help='The type of model that we use for evaluation')
-parser.add_argument('--train_batch_size', default=16,
+parser.add_argument('--train_batch_size', default=16, type=int,
                     help='The batch size for training')
-parser.add_argument('--val_batch_size', default=16,
+parser.add_argument('--val_batch_size', default=16, type=int,
                     help='The batch size for validating')
 parser.add_argument('--cache_dir', default="./cache/",
                     help='The directory to store all caches that we generate.')
 parser.add_argument('--use_gpu', default=False, action="store_true",
                     help='The directory to store all caches that we generate.')
+parser.add_argument('--fp16', default=False, action="store_true",
+                    help='Use mixed precision training.')
 
 args = parser.parse_args()
 
@@ -51,12 +53,14 @@ val_batch_size = args.val_batch_size
 cache_dir = args.cache_dir
 use_gpu = args.use_gpu
 epochs = args.epochs
+fp16 = 16 if args.fp16 else 32
+num_workers = 0
 if cache_dir is not None:
     os.makedirs(cache_dir, exist_ok=True)
-datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,cache_dir=cache_dir,num_workers=4)
+datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,cache_dir=cache_dir,num_workers=num_workers)
 # init model
-autoencoder = LitBertModel()
-
+# autoencoder = LitBertModel()
+autoencoder = LitKnowBERTModel()
 tb_logger =TensorBoardLogger(save_dir="tb_logs",name=model_name)
 
 # most basic trainer, uses good defaults (auto-tensorboard, checkpoints, logs, and more)
@@ -79,11 +83,8 @@ tb_logger =TensorBoardLogger(save_dir="tb_logs",name=model_name)
 # TODO Early stopping or epochs?
 # TODO auto lr finder
 # TODO Hyperparameters
-# TODO FINISH DATA CACHE.
 # TODO model dirs
 # tODO scripts
-# todo tensorboard
-# TODO METRICS https://pytorch-lightning.readthedocs.io/en/latest/metrics.html
 
 
 # checkpoints
@@ -91,6 +92,6 @@ checkpoints = CheckpointEveryNSteps(save_iters)
 # Early stopping #TODO model must implement a logging for 'val_loss'
 early_stopping = EarlyStopping(monitor='val_loss')
 trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
-                     auto_select_gpus=True,max_epochs=epochs,val_check_interval=1.0,logger=tb_logger)
+                     auto_select_gpus=True,max_epochs=epochs,val_check_interval=1.0,logger=tb_logger,precision=fp16)
 trainer.fit(autoencoder,datamodule=datamodule)
 trainer.test(datamodule=datamodule)

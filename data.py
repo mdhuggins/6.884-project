@@ -121,7 +121,9 @@ class AskUbuntuTrainDataset(Dataset):
             sample = {
                 "query_enc_dict": dict([(k, torch.squeeze(v)) for k, v in query_enc_dict.items()]),
                 "response_enc_dict": dict([(k, torch.squeeze(v)) for k, v in response_enc_dict.items()]),
-                "label": label
+                "label": label,
+                "query_text":query,
+                "response_text":response
             }
 
             self.examples.append(sample)
@@ -221,7 +223,9 @@ class AskUbuntuDevTestDataset(Dataset):
                     "query_enc_dict": dict([(k, torch.squeeze(v)) for k, v in query_enc_dict.items()]),
                     "response_enc_dict": dict([(k, torch.squeeze(v)) for k, v in response_enc_dict.items()]),
                     "label": label,
-                    "similarity": sim_score[idx_id]
+                    "similarity": sim_score[idx_id],
+                    "query_text":query,
+                    "response_text":response
                 }
                 self.examples.append(sample)
         if val_cache_file is not None:
@@ -251,16 +255,6 @@ class AskUbuntuDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.cache_dir = cache_dir
         self.num_workers = num_workers
-
-    def transfer_batch_to_device(self, batch, device):
-        # print("### DEVICE CHECK", device)
-        for k in batch.keys():
-            if isinstance(batch[k],Dict):
-                for i in batch[k].keys():
-                    batch[k][i] = batch[k][i].to(device)
-            else:
-                batch[k] = batch[k].to(device)
-        return batch
 
     def setup(self, stage=None):
         print("Setup is done in the datasets?")
