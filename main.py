@@ -13,7 +13,7 @@ from transformers import BertModel, BertConfig
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data import AskUbuntuDataModule
-from models import LitKnowBERTModel,LitBertModel
+from models import LitKnowBERTModel,LitBertModel,LitOutputBertModel
 from utils import CheckpointEveryNSteps
 torch.autograd.set_detect_anomaly(True)
 parser = ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
@@ -60,7 +60,9 @@ if cache_dir is not None:
 datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,cache_dir=cache_dir,num_workers=num_workers)
 # init model
 # autoencoder = LitBertModel()
-autoencoder = LitKnowBERTModel()
+
+# autoencoder = LitKnowBERTModel() ##Requires --train_batch_size 2
+autoencoder = LitOutputBertModel()
 tb_logger =TensorBoardLogger(save_dir="tb_logs",name=model_name)
 
 # most basic trainer, uses good defaults (auto-tensorboard, checkpoints, logs, and more)
@@ -92,6 +94,7 @@ checkpoints = CheckpointEveryNSteps(save_iters)
 # Early stopping #TODO model must implement a logging for 'val_loss'
 early_stopping = EarlyStopping(monitor='val_loss')
 trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
-                     auto_select_gpus=True,max_epochs=epochs,val_check_interval=1.0,logger=tb_logger,precision=fp16)
+                     auto_select_gpus=True,max_epochs=epochs,check_val_every_n_epoch=5,
+                     logger=tb_logger,precision=fp16,num_sanity_val_steps=0)
 trainer.fit(autoencoder,datamodule=datamodule)
 trainer.test(datamodule=datamodule)
