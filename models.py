@@ -18,9 +18,9 @@ from spacy.util import filter_spans
 import pandas as pd
 import numpy as np
 
-def get_accuracy(y_true, y_prob):
-    accuracy = sklearn.metrics.accuracy_score(y_true, [1 if x > 0.5 else 0 for x in y_prob])
-    return accuracy
+# def get_accuracy(y_true, y_prob):
+#     accuracy = sklearn.metrics.accuracy_score(y_true, [1 if x > 0.5 else 0 for x in y_prob])
+#     return accuracy
 def transfer_batch_to_device(batch, device):
     # print("### DEVICE CHECK", device)
     for k in batch.keys():
@@ -44,10 +44,13 @@ class LitBertModel(pl.LightningModule):
         )
         self.query_rescale_layer = nn.Linear(768, 768)
         self.response_rescale_layer = nn.Linear(768, 768)
-
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
-
+        self.accuracy = pl.metrics.Accuracy()
+    def on_train_epoch_start(self):
+        print("Starting training epoch...")
+    def on_train_epoch_end(self, outputs):
+        print("Finished training epoch...")
 
     def training_step(self, batch, batch_idx):
 
@@ -61,14 +64,12 @@ class LitBertModel(pl.LightningModule):
 
         preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
 
-        loss =mse_loss(preds, labels)
+        loss = mse_loss(preds, labels)
 
         # Logging to TensorBoard by default
-        self.log('train_loss', loss,on_step=True)
+        self.log('train_loss', loss)
 
         return loss
-
-
 
     def validation_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -87,8 +88,15 @@ class LitBertModel(pl.LightningModule):
         preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
 
         val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('val_loss', val_loss,on_step=True)
+        self.log('val_loss_step', val_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
         return val_loss
+
+    def on_validation_epoch_end(self):
+        print("Calculating validation accuracy...")
+        vacc = self.accuracy.compute()
+        print("Validation accuracy:",vacc)
+        self.log('val_acc_epoch',vacc)
 
     def test_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -106,62 +114,15 @@ class LitBertModel(pl.LightningModule):
 
         preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
 
-        val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('test_loss', val_loss,on_step=True)
-        return val_loss
+        test_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
+        self.log('test_loss', test_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
 
-    def on_validation_epoch_end(self):
-        results = []
-        gold = []
-        print("Calculating validation accuracy...")
-        for idx, batch in enumerate(tqdm(self.val_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Val acc",val_acc)
-        self.log('val_accuracy',val_acc,on_epoch=True)
+        return test_loss
 
     def on_test_epoch_end(self):
-        results = []
-        gold = []
         print("Calculating test accuracy...")
-        for idx, batch in enumerate(tqdm(self.test_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output),
-                                                                self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Test acc", val_acc)
-        self.log('test_accuracy', val_acc,on_epoch=True)
+        self.log('test_acc_epoch', self.accuracy.compute())
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
@@ -178,11 +139,15 @@ class LitOutputBertModel(pl.LightningModule):
             output_hidden_states = False, # Whether the model returns all hidden-states.
         )
         self.query_rescale_layer = nn.Linear(768, 768)
-        self.response_rescale_layer = nn.Linear(768, 768)
         self.knowledge_infusion_layer = nn.Linear(300,768)
+        self.compressor = nn.Linear(300,64)
+        self.decompressor = nn.Linear(64,300)
+        self.nonlinear = nn.ReLU()
+
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
 
+        self.accuracy = pl.metrics.Accuracy()
 
         self.nlp = spacy.load('en_core_web_sm')
 
@@ -196,6 +161,11 @@ class LitOutputBertModel(pl.LightningModule):
         self.matcher.add("Verb phrase", None, pattern)
         self.tokenizer = BertTokenizerFast.from_pretrained(bertmodel)
         self.numberbatch = pd.read_hdf("models/mini-2.h5","mat")
+
+    def on_train_epoch_start(self):
+        print("Starting training epoch...")
+    def on_train_epoch_end(self, outputs):
+        print("Finished training epoch...")
 
     def knowledge_infusion(self, input_ids,last_hidden_state):
         stacked_sentences = []
@@ -261,7 +231,12 @@ class LitOutputBertModel(pl.LightningModule):
             #         sentence_vecs.append(to_append)
             stacked_sentences.append(final_list)
         entity_embeds = torch.tensor(stacked_sentences).float().to(self.device)
+        entity_embeds = self.compressor(entity_embeds)
+        entity_embeds = self.nonlinear(entity_embeds)
+        entity_embeds = self.decompressor(entity_embeds)
+        entity_embeds = self.nonlinear(entity_embeds)
         expanded_entity_embeds = self.knowledge_infusion_layer(entity_embeds)
+
         representation = last_hidden_state + expanded_entity_embeds
         representation = torch.mean(representation, 1)
         return representation
@@ -279,7 +254,7 @@ class LitOutputBertModel(pl.LightningModule):
         response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'], attention_mask=response_dict['attention_mask'])
         response_pooler_output = self.knowledge_infusion(response_dict["input_ids"],response_last_hidden_state)
 
-        preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
+        preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)))
 
         loss = mse_loss(preds, labels)
 
@@ -287,7 +262,6 @@ class LitOutputBertModel(pl.LightningModule):
         self.log('train_loss', loss,on_step=True)
 
         return loss
-
 
     def validation_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -306,11 +280,18 @@ class LitOutputBertModel(pl.LightningModule):
                                                                        attention_mask=response_dict['attention_mask'])
         response_pooler_output = self.knowledge_infusion(response_dict["input_ids"], response_last_hidden_state)
 
-        preds =self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+        preds =self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)).to(self.device)
 
         val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('val_loss', val_loss,on_step=True)
+        self.log('val_loss_step', val_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
         return val_loss
+
+    def on_validation_epoch_end(self):
+        print("Calculating validation accuracy...")
+        vacc = self.accuracy.compute()
+        print("Validation accuracy:", vacc)
+        self.log('val_acc_epoch', vacc)
 
     def test_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -329,70 +310,16 @@ class LitOutputBertModel(pl.LightningModule):
                                                                        attention_mask=response_dict['attention_mask'])
         response_pooler_output = self.knowledge_infusion(response_dict["input_ids"], response_last_hidden_state)
 
-        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)).to(self.device)
 
-        val_loss = torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('test_loss', val_loss,on_step=True)
-        return val_loss
-
-    def on_validation_epoch_end(self):
-        results = []
-        gold = []
-        print("Calculating validation accuracy...")
-        for idx, batch in enumerate(tqdm(self.val_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            query_pooler_output = self.knowledge_infusion(query_dict["input_ids"], query_last_hidden_state)
-
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-            response_pooler_output = self.knowledge_infusion(response_dict["input_ids"], response_last_hidden_state)
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Val acc",val_acc)
-        self.log('val_accuracy',val_acc,on_epoch=True)
+        test_loss = torch.nn.BCEWithLogitsLoss()(preds,labels)
+        self.log('test_loss', test_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
+        return test_loss
 
     def on_test_epoch_end(self):
-        results = []
-        gold = []
         print("Calculating test accuracy...")
-        for idx, batch in enumerate(tqdm(self.test_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            query_pooler_output = self.knowledge_infusion(query_dict["input_ids"], query_last_hidden_state)
-
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-            response_pooler_output = self.knowledge_infusion(response_dict["input_ids"], response_last_hidden_state)
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output),
-                                                                self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Test acc", val_acc)
-        self.log('test_accuracy', val_acc,on_epoch=True)
+        self.log('test_acc_epoch', self.accuracy.compute())
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
@@ -411,10 +338,15 @@ class LitKnowBERTModel(pl.LightningModule):
         self.batcher = KnowBertBatchifier(archive_file)
         self.bert = model
         self.query_rescale_layer = nn.Linear(768, 768)
-        self.response_rescale_layer = nn.Linear(768, 768)
 
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
+        self.accuracy = pl.metrics.Accuracy()
+
+    def on_train_epoch_start(self):
+        print("Starting training epoch...")
+    def on_train_epoch_end(self, outputs):
+        print("Finished training epoch...")
 
     def training_step(self, batch, batch_idx):
 
@@ -432,7 +364,7 @@ class LitKnowBERTModel(pl.LightningModule):
         response_pooler_output = self.bert(**b)['pooled_output']
         # response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'], attention_mask=response_dict['attention_mask'])
         #
-        preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
+        preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)))
         #
         loss =mse_loss(preds, labels)
 
@@ -467,11 +399,18 @@ class LitKnowBERTModel(pl.LightningModule):
         b = transfer_batch_to_device(b,self.device)
 
         response_pooler_output = self.bert(**b)['pooled_output']
-        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)).to(self.device)
 
-        val_loss = torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('val_loss', val_loss,on_step=True)
+        val_loss = torch.nn.BCEWithLogitsLoss()(preds, labels)
+        self.log('val_loss_step', val_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
         return val_loss
+
+    def on_validation_epoch_end(self):
+        print("Calculating validation accuracy...")
+        vacc = self.accuracy.compute()
+        print("Validation accuracy:", vacc)
+        self.log('val_acc_epoch', vacc)
 
     def test_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -496,83 +435,18 @@ class LitKnowBERTModel(pl.LightningModule):
         b = transfer_batch_to_device(b,self.device)
 
         response_pooler_output = self.bert(**b)['pooled_output']
-        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+        preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output)).to(self.device)
 
-        val_loss = torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('test_loss', val_loss,on_step=True)
-        return val_loss
+        test_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
+        self.log('test_loss', test_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
 
-    def on_validation_epoch_end(self):
-        results = []
-        gold = []
-        return
-        print("Calculating validation accuracy...")
-        for idx, batch in enumerate(tqdm(self.val_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-            query_text = batch['query_text']
-            response_text = batch['response_text']
-            b = next(self.batcher.iter_batches(response_text,verbose=False))
-            b = transfer_batch_to_device(b, self.device)
+        return test_loss
 
-            query_pooler_output = self.bert(**b)['pooled_output']
-            b = next(self.batcher.iter_batches(response_text,verbose=False))
-            b = transfer_batch_to_device(b, self.device)
-
-            response_pooler_output = self.bert(**b)['pooled_output']
-            # query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-            #                                                          token_type_ids=query_dict['token_type_ids'],
-            #                                                          attention_mask=query_dict['attention_mask'])
-            # response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-            #                                                                token_type_ids=response_dict[
-            #                                                                    'token_type_ids'],
-            #                                                                attention_mask=response_dict[
-            #                                                                    'attention_mask'])
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Val acc",val_acc)
-        self.log('val_accuracy',val_acc,on_epoch=True)
 
     def on_test_epoch_end(self):
-        results = []
-        gold = []
         print("Calculating test accuracy...")
-        for idx, batch in enumerate(tqdm(self.test_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            # query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-            #                                                          token_type_ids=query_dict['token_type_ids'],
-            #                                                          attention_mask=query_dict['attention_mask'])
-            # response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-            #                                                                token_type_ids=response_dict[
-            #                                                                    'token_type_ids'],
-            #                                                                attention_mask=response_dict[
-            #                                                                    'attention_mask'])
-            query_text = batch['query_text']
-            response_text = batch['response_text']
-            b = next(self.batcher.iter_batches(response_text,verbose=False))
-            b = transfer_batch_to_device(b, self.device)
-
-            query_pooler_output = self.bert(**b)['pooled_output']
-            b = next(self.batcher.iter_batches(response_text,verbose=False))
-            b = transfer_batch_to_device(b, self.device)
-
-            response_pooler_output = self.bert(**b)['pooled_output']
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output),
-                                                                self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Test acc", val_acc)
-        self.log('test_accuracy', val_acc,on_epoch=True)
+        self.log('test_acc_epoch', self.accuracy.compute())
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)

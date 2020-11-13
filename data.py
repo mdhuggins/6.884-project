@@ -148,10 +148,10 @@ class AskUbuntuTrainDataset(Dataset):
 
 class AskUbuntuDevTestDataset(Dataset):
 
-    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, cache_dir=None, test=False):
+    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, cache_dir=None, test=False, pad_len=128):
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
-        self.pad_len = 128
+        self.pad_len = pad_len
         if cache_dir is not None:
             if not test:
                 print("Loading validation cache")
@@ -249,12 +249,13 @@ class AskUbuntuDevTestDataset(Dataset):
 
 class AskUbuntuDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, batch_size, cache_dir=None,num_workers=0):
+    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0):
         super().__init__()
         self.root_dir = data_dir
         self.batch_size = batch_size
         self.cache_dir = cache_dir
         self.num_workers = num_workers
+        self.pad_len = pad_len
 
     def setup(self, stage=None):
         print("Setup is done in the datasets?")
@@ -262,15 +263,15 @@ class AskUbuntuDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(
-            AskUbuntuTrainDataset(toy_n=300, toy_pad=128, root_dir=self.root_dir, cache_dir=self.cache_dir),
+            AskUbuntuTrainDataset(toy_n=300, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir),
             batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers)
 
     def val_dataloader(self):
         return DataLoader(
-            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False),
+            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False,pad_len=self.pad_len),
             batch_size=self.batch_size,num_workers=self.num_workers)
 
     def test_dataloader(self):
         return DataLoader(
-            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True),
-            batch_size=self.batch_size,num_workers=self.num_workers)
+            AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True,pad_len =self.pad_len),
+            batch_size=self.batch_size,num_workers=self.num_workers, )
