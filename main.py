@@ -65,11 +65,11 @@ if cache_dir is not None:
 
 datasets_and_models = [
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers},
-    #        LitBertModel),
+    #        LitBertModel,{"accumulate_grad_batches":1}),
     ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers},
-           LitOutputBertModel),
+           LitOutputBertModel, {"accumulate_grad_batches":1}),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":2,"cache_dir":cache_dir,"num_workers":num_workers},
-    #        LitKnowBERTModel)
+    #        LitKnowBERTModel,{"accumulate_grad_batches":8})
 ]
 # most basic trainer, uses good defaults (auto-tensorboard, checkpoints, logs, and more)
 # trainer = pl.Trainer(gpus=8) (if you have GPUs)
@@ -98,6 +98,7 @@ datasets_and_models = [
 for idx,tup in enumerate(datasets_and_models):
     ds = tup[0]
     model = tup[1]
+    train_p = tup[2]
     # checkpoints
     checkpoints = CheckpointEveryNSteps(save_iters)
     # Early stopping
@@ -108,11 +109,14 @@ for idx,tup in enumerate(datasets_and_models):
     print("Starting...")
     dataset = AskUbuntuDataModule(**ds)
     model = model()
+    #Additional trainer params
+    accumulate_grad_batches = train_p["accumulate_grad_batches"] if "accumulate_grad_batches" in train_p.keys() else None
     print(dataset,model)
     print("Initializing the trainer")
     trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
                          auto_select_gpus=True,max_epochs=epochs,check_val_every_n_epoch=1,
-                         logger=tb_logger,precision=fp16,num_sanity_val_steps=0)
+                         logger=tb_logger,precision=fp16,num_sanity_val_steps=0,log_every_n_steps=5,
+                         accumulate_grad_batches=accumulate_grad_batches)
     print("Fitting...")
     trainer.fit(model,datamodule=dataset)
     print("Testing...")
