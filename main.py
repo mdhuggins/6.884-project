@@ -13,7 +13,7 @@ from transformers import BertModel, BertConfig
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data import AskUbuntuDataModule
-from models import LitKnowBERTModel,LitBertModel,LitOutputBertModel
+from models import LitKnowBERTModel,LitBertModel,LitOutputBertModel, LitInputBertModel
 from utils import CheckpointEveryNSteps
 torch.autograd.set_detect_anomaly(True)
 parser = ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
@@ -22,7 +22,7 @@ parser.add_argument('--save_iters', type=int, default=500,
                     help='The amount of steps to save a model')
 parser.add_argument('--epochs', type=int, default=5,
                     help='The amount of epochs to run during training')
-parser.add_argument('--data_dir', default="./data/askubuntu/",
+parser.add_argument('--data_dir', default="./data/askubuntu-master",
                     help='The root of the data directory for the askubuntu dataset')
 parser.add_argument('--model_dir', default="./models/",
                     help='The directory to save trained/checkpointed models')
@@ -62,7 +62,7 @@ datamodule = AskUbuntuDataModule(data_dir=data_dir,batch_size=train_batch_size,c
 # autoencoder = LitBertModel()
 
 # autoencoder = LitKnowBERTModel() ##Requires --train_batch_size 2
-autoencoder = LitOutputBertModel()
+autoencoder = LitInputBertModel()
 tb_logger =TensorBoardLogger(save_dir="tb_logs",name=model_name)
 
 # most basic trainer, uses good defaults (auto-tensorboard, checkpoints, logs, and more)
