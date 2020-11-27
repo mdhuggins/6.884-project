@@ -1,5 +1,5 @@
 import os
-import pickle
+import dill
 import random
 from typing import Dict
 
@@ -85,7 +85,7 @@ class AskUbuntuTrainDataset(Dataset):
             print("Checking if cache...")
             if os.path.exists(train_cache_file):
                 print("Cache found", train_cache_file, "loading it...")
-                self.examples = pickle.load(open(train_cache_file, 'rb'))
+                self.examples = dill.load(open(train_cache_file, 'rb'))
                 return
 
         print("Tokenizing training set with BERT tokenizer...")
@@ -128,7 +128,7 @@ class AskUbuntuTrainDataset(Dataset):
 
             self.examples.append(sample)
         if train_cache_file is not None:
-            pickle.dump(self.examples, open(train_cache_file, "wb"))
+            dill.dump(self.examples, open(train_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -192,7 +192,7 @@ class AskUbuntuDevTestDataset(Dataset):
             print("Checking if cache...")
             if os.path.exists(val_cache_file):
                 print("Cache found", val_cache_file, "loading it...")
-                self.examples = pickle.load(open(val_cache_file, 'rb'))
+                self.examples = dill.load(open(val_cache_file, 'rb'))
                 return
         print("Tokenizing training set with BERT tokenizer...")
         for idx in tqdm(range(len(self.tuples))):
@@ -230,7 +230,7 @@ class AskUbuntuDevTestDataset(Dataset):
                 self.examples.append(sample)
         if val_cache_file is not None:
             print("Dumping to",val_cache_file)
-            pickle.dump(self.examples, open(val_cache_file, "wb"))
+            dill.dump(self.examples, open(val_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -249,21 +249,21 @@ class AskUbuntuDevTestDataset(Dataset):
 
 class AskUbuntuDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0):
+    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0,toy_n=500):
         super().__init__()
         self.root_dir = data_dir
         self.batch_size = batch_size
         self.cache_dir = cache_dir
         self.num_workers = num_workers
         self.pad_len = pad_len
+        self.toy_n=toy_n
 
     def setup(self, stage=None):
         print("Setup is done in the datasets?")
         return None
 
-    def train_dataloader(self):
-        return DataLoader(
-            AskUbuntuTrainDataset(toy_n=300, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir),
+    def train_dataloader(self):        return DataLoader(
+            AskUbuntuTrainDataset(toy_n=self.toy_n, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir),
             batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers)
 
     def val_dataloader(self):
