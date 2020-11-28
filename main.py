@@ -73,7 +73,9 @@ datasets_and_models = [
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
     #        LitBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
     ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-           LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outputbert"),
+           LitInputBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
+    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
+    #        LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outputbert"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
     #        LitOutputBaseModel, {"accumulate_grad_batches":grad_acc_batchs},"outputbase"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":2,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
@@ -124,7 +126,7 @@ for idx,tup in enumerate(datasets_and_models):
         print(dataset,model)
         print("Initializing the trainer")
         trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
-                             auto_select_gpus=True,max_epochs=epochs,val_check_interval=0.5,check_val_every_n_epoch=1,
+                             auto_select_gpus=True,max_epochs=epochs,val_check_interval=0.1,check_val_every_n_epoch=1,
                              logger=tb_logger,precision=fp16,num_sanity_val_steps=0,
                              accumulate_grad_batches=accumulate_grad_batches)
         print("Fitting...")

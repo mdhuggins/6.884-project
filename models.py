@@ -12,9 +12,9 @@ from transformers import BertModel, BertTokenizerFast
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers import BertModel, BertTokenizerFast, BertLayer, BertConfig
 import sklearn
-# from kb.include_all import ModelArchiveFromParams
-# from kb.knowbert_utils import KnowBertBatchifier
-# from allennlp.common import Params
+from kb.include_all import ModelArchiveFromParams
+from kb.knowbert_utils import KnowBertBatchifier
+from allennlp.common import Params
 import spacy
 from spacy.matcher import Matcher
 from spacy.util import filter_spans
@@ -863,6 +863,8 @@ class LitInputBertModel(pl.LightningModule):
 
         self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
         self.numberbatch = pd.read_hdf("models/mini-2.h5","mat")
+        self.accuracy = pl.metrics.Accuracy()
+
 
     def knowledge_infusion(self, input_ids, embedding_output):
         stacked_sentences = []
@@ -972,8 +974,15 @@ class LitInputBertModel(pl.LightningModule):
         preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
 
         val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('val_loss', val_loss,on_step=True)
+        self.log('val_loss_step', val_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
         return val_loss
+
+    def on_validation_epoch_end(self):
+        print("Calculating validation accuracy...")
+        vacc = self.accuracy.compute()
+        print("Validation accuracy:",vacc)
+        self.log('val_acc_epoch',vacc)
 
     def test_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
@@ -991,62 +1000,16 @@ class LitInputBertModel(pl.LightningModule):
 
         preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
 
-        val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('test_loss', val_loss,on_step=True)
-        return val_loss
+        test_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
+        self.log('test_loss', test_loss)
+        self.log('test_acc_step', self.accuracy(preds, labels))
 
-    def on_validation_epoch_end(self):
-        results = []
-        gold = []
-        print("Calculating validation accuracy...")
-        for idx, batch in enumerate(tqdm(self.val_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
-
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Val acc",val_acc)
-        self.log('val_accuracy',val_acc,on_epoch=True)
+        return test_loss
 
     def on_test_epoch_end(self):
-        results = []
-        gold = []
         print("Calculating test accuracy...")
-        for idx, batch in enumerate(tqdm(self.test_dataloader(),leave=True)):
-            batch = transfer_batch_to_device(batch, self.device)
-            labels = batch['label'].float()
-            gold.extend([int(x) for x in labels.cpu().numpy()])
-            query_dict = batch['query_enc_dict']
-            response_dict = batch['response_enc_dict']
+        self.log('test_acc_epoch', self.accuracy.compute())
 
-            query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                     token_type_ids=query_dict['token_type_ids'],
-                                                                     attention_mask=query_dict['attention_mask'])
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-
-            preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output),
-                                                                self.response_rescale_layer(response_pooler_output)))
-            results.extend([float(x) for x in preds.cpu().numpy()])
-        val_acc = get_accuracy(gold, results)
-        print("Test acc", val_acc)
-        self.log('test_accuracy', val_acc,on_epoch=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
