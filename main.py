@@ -1,19 +1,13 @@
-from argparse import ArgumentParser
 import os
-import torch
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from torch import nn
-import torch.nn.functional as F
-from torchvision.datasets import MNIST
-from torchvision import transforms
-from torch.utils.data import DataLoader
+from argparse import ArgumentParser
 import pytorch_lightning as pl
-from torch.utils.data import random_split
-from transformers import BertModel, BertConfig
+from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data import AskUbuntuDataModule
-from models import *
+from models.basemodel import LitBertModel
+from models.inputmodel import LitInputBertModel
+from models.outputmodel import LitOutputBertModel
 from utils import CheckpointEveryNSteps
 # torch.autograd.set_detect_anomaly(True)
 parser = ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
@@ -36,6 +30,8 @@ parser.add_argument('--val_batch_size', default=16, type=int,
                     help='The batch size for validating')
 parser.add_argument('--cache_dir', default="./cache/",
                     help='The directory to store all caches that we generate.')
+parser.add_argument('--use_cache', action='store_true', default= False,
+                    help='Uses a cache for the data')
 parser.add_argument('--use_gpu', default=False, action="store_true",
                     help='The directory to store all caches that we generate.')
 parser.add_argument('--fp16', default=False, action="store_true",
@@ -64,46 +60,23 @@ fp16 = 16 if args.fp16 else 32
 num_workers = 0
 grad_acc_batchs = args.gradient_acc_batches
 toy_n = args.toy_n
-
+use_cache = args.use_cache
 if cache_dir is not None:
     os.makedirs(cache_dir, exist_ok=True)
 
 
 datasets_and_models = [
+    ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"use_cache":use_cache,"num_workers":num_workers,"toy_n":toy_n},
+           LitBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
-    ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-           LitInputBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
+    #        LitInputBertModel,{"accumulate_grad_batches":grad_acc_batchs},"inbert"),
+    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"use_cache":use_cache,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
+    #        LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outbert"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outputbert"),
-    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitOutputBaseModel, {"accumulate_grad_batches":grad_acc_batchs},"outputbase"),
+    #        LitOutputBaseModel, {"accumulate_grad_batches":grad_acc_batchs},"outbase"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":2,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitKnowBERTModel,{"accumulate_grad_batches":8},"knowbert")
+    #        LitKnowBERTModel,{"accumulate_grad_batches":8},"archbert")
 ]
-# most basic trainer, uses good defaults (auto-tensorboard, checkpoints, logs, and more)
-# trainer = pl.Trainer(gpus=8) (if you have GPUs)
-# train on 8 CPUs
-# trainer = pl.Trainer(num_processes=8)
-# train on 1 GPU
-# trainer = pl.Trainer(gpus=1)
-
-# train on TPUs using 16 bit precision
-# using only half the training data and checking validation every quarter of a training epoch
-# trainer = pl.Trainer(
-#     tpu_cores=8,
-#     precision=16,
-#     limit_train_batches=0.5,
-#     val_check_interval=0.25
-# )
-
-# TODO Early stopping or epochs?
-# TODO auto lr finder
-# TODO Hyperparameters
-# TODO model dirs
-# tODO scripts
-
-
 
 for idx,tup in enumerate(datasets_and_models):
     try:
@@ -125,11 +98,31 @@ for idx,tup in enumerate(datasets_and_models):
         accumulate_grad_batches = train_p["accumulate_grad_batches"] if "accumulate_grad_batches" in train_p.keys() else None
         print(dataset,model)
         print("Initializing the trainer")
-        trainer = pl.Trainer(callbacks=[checkpoints, early_stopping], gpus=1 if args.use_gpu else None,
-                             auto_select_gpus=True,max_epochs=epochs,val_check_interval=0.1,check_val_every_n_epoch=1,
+        cbs = [checkpoints, early_stopping]
+        trainer = pl.Trainer(callbacks=[], gpus=-1 if args.use_gpu else None,
+                             auto_select_gpus=args.use_gpu,max_epochs=epochs,val_check_interval=0.5,check_val_every_n_epoch=1,
                              logger=tb_logger,precision=fp16,num_sanity_val_steps=0,
-                             accumulate_grad_batches=accumulate_grad_batches)
+                             )
+
         print("Fitting...")
+
+        # trainer.tune(model)
+        # Run learning rate finder
+        # lr_finder = trainer.tuner.lr_find(model,datamodule=dataset,max_lr=5)
+        #
+        # # Results can be found in
+        # # lr_finder.results
+        #
+        # # Plot with
+        # fig = lr_finder.plot(suggest=True)
+        # fig.show()
+        #
+        # # Pick point based on plot, or get suggestion
+        # new_lr = lr_finder.suggestion()
+        #
+        # # update hparams of the model
+        # model.hparams.lr = new_lr
+
         trainer.fit(model,datamodule=dataset)
         print("Testing...")
         trainer.test(datamodule=dataset)

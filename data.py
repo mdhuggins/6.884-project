@@ -16,11 +16,12 @@ tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased', do_lower_case
 class AskUbuntuTrainDataset(Dataset):
 
     def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, use_bert_tokenizer=True, toy_n=None,
-                 toy_pad=None, cache_dir=None):
+                 toy_pad=None, cache_dir=None, use_cache=False):
         self.use_bert_tokenizer = use_bert_tokenizer
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
         self.pad_len = 0
+        self.use_cache = use_cache
         if cache_dir is not None:
             train_cache_file = os.path.join(cache_dir, "training_data.pkl")
 
@@ -84,9 +85,14 @@ class AskUbuntuTrainDataset(Dataset):
         if cache_dir is not None:
             print("Checking if cache...")
             if os.path.exists(train_cache_file):
-                print("Cache found", train_cache_file, "loading it...")
-                self.examples = dill.load(open(train_cache_file, 'rb'))
-                return
+                print("Cache found", train_cache_file)
+                if self.use_cache:
+                    print("Loading it!")
+                    self.examples = dill.load(open(train_cache_file, 'rb'))
+                    return
+                else:
+                    print("Skipping it, use_cache not toggled")
+
 
         print("Tokenizing training set with BERT tokenizer...")
         for idx in tqdm(range(len(triples))):
@@ -128,7 +134,9 @@ class AskUbuntuTrainDataset(Dataset):
 
             self.examples.append(sample)
         if train_cache_file is not None:
-            dill.dump(self.examples, open(train_cache_file, "wb"))
+            if use_cache:
+                print("Saving...")
+                dill.dump(self.examples, open(train_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -148,10 +156,11 @@ class AskUbuntuTrainDataset(Dataset):
 
 class AskUbuntuDevTestDataset(Dataset):
 
-    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, cache_dir=None, test=False, pad_len=128):
+    def __init__(self, root_dir="./data/askubuntu-master", neg_pos_ratio=20, cache_dir=None, test=False, pad_len=128, use_cache=True):
         self.root_dir = root_dir
         self.neg_pos_ratio = neg_pos_ratio
         self.pad_len = pad_len
+        self.use_cache = use_cache
         if cache_dir is not None:
             if not test:
                 print("Loading validation cache")
@@ -191,10 +200,14 @@ class AskUbuntuDevTestDataset(Dataset):
         if cache_dir is not None:
             print("Checking if cache...")
             if os.path.exists(val_cache_file):
-                print("Cache found", val_cache_file, "loading it...")
-                self.examples = dill.load(open(val_cache_file, 'rb'))
-                return
-        print("Tokenizing training set with BERT tokenizer...")
+                print("Cache found", val_cache_file)
+                if self.use_cache:
+                    print("Loading it...")
+                    self.examples = dill.load(open(val_cache_file, 'rb'))
+                    return
+                else:
+                    print("skipping it!")
+        print("Tokenizing dev/eval set with BERT tokenizer...")
         for idx in tqdm(range(len(self.tuples))):
             query_id, true_ids, all_ids, sim_score = self.tuples[idx]
             query = self.combine_title_body(query_id)
@@ -207,8 +220,14 @@ class AskUbuntuDevTestDataset(Dataset):
                 return_attention_mask=True,  # Construct attn. masks.
                 return_tensors='pt',  # Return pytorch tensors.
             )
+            responses_enc_dictionary = []
+            labels = []
+            responses_text = []
+
             for idx_id, id in enumerate(all_ids):
                 response = self.combine_title_body(id)
+                responses_text.append(response)
+
                 response_enc_dict = tokenizer.encode_plus(
                     response,  # Sentence to encode.
                     add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
@@ -218,19 +237,24 @@ class AskUbuntuDevTestDataset(Dataset):
                     return_attention_mask=True,  # Construct attn. masks.
                     return_tensors='pt',  # Return pytorch tensors.
                 )
+                responses_enc_dictionary.append(dict([(k, torch.squeeze(v)) for k, v in response_enc_dict.items()]))
                 label = 1.0 if id in true_ids else 0.0
-                sample = {
-                    "query_enc_dict": dict([(k, torch.squeeze(v)) for k, v in query_enc_dict.items()]),
-                    "response_enc_dict": dict([(k, torch.squeeze(v)) for k, v in response_enc_dict.items()]),
-                    "label": label,
-                    "similarity": sim_score[idx_id],
-                    "query_text":query,
-                    "response_text":response
-                }
-                self.examples.append(sample)
+                labels.append(label)
+
+            sample = {
+                "query_enc_dict": dict([(k, torch.squeeze(v)) for k, v in query_enc_dict.items()]),
+                "response_enc_dict": responses_enc_dictionary,
+                "label": labels,
+                "similarity": sim_score,
+                "query_text":query,
+                "response_text":responses_text
+            }
+                # self.examples.append(sample)
+            self.examples.append(sample)
         if val_cache_file is not None:
-            print("Dumping to",val_cache_file)
-            dill.dump(self.examples, open(val_cache_file, "wb"))
+            if self.use_cache:
+                print("Dumping to",val_cache_file)
+                dill.dump(self.examples, open(val_cache_file, "wb"))
 
     def __len__(self):
         return len(self.examples)
@@ -249,7 +273,7 @@ class AskUbuntuDevTestDataset(Dataset):
 
 class AskUbuntuDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0,toy_n=500):
+    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0,toy_n=500,use_cache=False):
         super().__init__()
         self.root_dir = data_dir
         self.batch_size = batch_size
@@ -257,21 +281,23 @@ class AskUbuntuDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.pad_len = pad_len
         self.toy_n=toy_n
+        self.use_cache = use_cache
 
     def setup(self, stage=None):
         print("Setup is done in the datasets?")
         return None
 
-    def train_dataloader(self):        return DataLoader(
-            AskUbuntuTrainDataset(toy_n=self.toy_n, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir),
+    def train_dataloader(self):
+        return DataLoader(
+            AskUbuntuTrainDataset(toy_n=self.toy_n, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir,use_cache=self.use_cache),
             batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers)
 
     def val_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False,pad_len=self.pad_len),
-            batch_size=self.batch_size,num_workers=self.num_workers)
+            batch_size=8,num_workers=self.num_workers)
 
     def test_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True,pad_len =self.pad_len),
-            batch_size=self.batch_size,num_workers=self.num_workers, )
+            batch_size=8,num_workers=self.num_workers, )
