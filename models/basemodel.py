@@ -118,10 +118,10 @@ class LitBertModel(pl.LightningModule):
         print("Validation accuracy:",vacc),
         print(MAP,MRR,P1,P5)
         self.log('val_acc_epoch',vacc)
-        self.log('v_MAP',MAP,sync_dist=True)
-        self.log('v_Mrr', MRR,sync_dist=True)
-        self.log('v_p1', P1,sync_dist=True)
-        self.log('v_p5',P5,sync_dist=True)
+        self.log('v_MAP',MAP)
+        self.log('v_Mrr', MRR)
+        self.log('v_p1', P1)
+        self.log('v_p5',P5)
 
 
     def test_step(self, batch, batch_idx):
@@ -188,10 +188,10 @@ class LitBertModel(pl.LightningModule):
         print("Test accuracy:", vacc),
         print(MAP, MRR, P1, P5)
         self.log('test_acc_epoch', vacc)
-        self.log('t_MAP', MAP,sync_dist=True)
-        self.log('t_Mrr', MRR,sync_dist=True)
-        self.log('t_p1', P1,sync_dist=True)
-        self.log('t_p5', P5,sync_dist=True)
+        self.log('t_MAP', MAP)
+        self.log('t_Mrr', MRR)
+        self.log('t_p1', P1)
+        self.log('t_p5', P5)
 
     # def configure_optimizers(self):
     #     optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
@@ -199,7 +199,7 @@ class LitBertModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=5e-5)
-        scheduler = StepLR(optimizer, step_size=25, gamma=0.7)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
         # scheduler  = torch.optim.lr_scheduler.OneCycleLR(optimizer, 5e-3, total_steps=len(self.train_dataloader()), epochs=1, steps_per_epoch=None,
         #                                     pct_start=0.3, anneal_strategy='linear', cycle_momentum=True,
         #                                     base_momentum=0.85, max_momentum=0.95, div_factor=25.0,
