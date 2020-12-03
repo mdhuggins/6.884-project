@@ -5,6 +5,7 @@ from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data import AskUbuntuDataModule
+from models.architecturemodel import LitBertArchitectureModel
 from models.basemodel import LitBertModel
 from models.inputmodel import LitInputBertModel
 from models.outputmodel import LitOutputBertModel
@@ -68,14 +69,14 @@ if cache_dir is not None:
 datasets_and_models = [
     ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"use_cache":use_cache,"num_workers":num_workers,"toy_n":toy_n},
            LitBertModel,{"accumulate_grad_batches":grad_acc_batchs},"basebert"),
-    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitInputBertModel,{"accumulate_grad_batches":grad_acc_batchs},"inbert"),
-    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"use_cache":use_cache,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outbert"),
+    ({"pad_len": pad_len, "data_dir": data_dir, "batch_size": 2, "use_cache":use_cache,"cache_dir": cache_dir, "num_workers": num_workers,"toy_n": toy_n},
+           LitBertArchitectureModel, {"accumulate_grad_batches": 8}, "archbert"),
+    ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"use_cache":use_cache,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
+           LitInputBertModel,{"accumulate_grad_batches":grad_acc_batchs},"inbert"),
+    ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"use_cache":use_cache,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
+           LitOutputBertModel, {"accumulate_grad_batches":grad_acc_batchs},"outbert"),
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
     #        LitOutputBaseModel, {"accumulate_grad_batches":grad_acc_batchs},"outbase"),
-    # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":2,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
-    #        LitKnowBERTModel,{"accumulate_grad_batches":8},"archbert")
 ]
 
 for idx,tup in enumerate(datasets_and_models):
@@ -85,9 +86,9 @@ for idx,tup in enumerate(datasets_and_models):
         train_p = tup[2]
         model_name = tup[3]
         # checkpoints
-        checkpoints = CheckpointEveryNSteps(save_iters)
+        # checkpoints = CheckpointEveryNSteps(save_iters)
         # Early stopping
-        early_stopping = EarlyStopping(monitor='val_loss_step')
+        # early_stopping = EarlyStopping(monitor='val_loss_step')
         tb_logger = TensorBoardLogger(save_dir="tb_logs", name=
                                       "model_"+str(idx))
 
@@ -96,11 +97,12 @@ for idx,tup in enumerate(datasets_and_models):
         model = model()
         #Additional trainer params
         accumulate_grad_batches = train_p["accumulate_grad_batches"] if "accumulate_grad_batches" in train_p.keys() else None
-        print(dataset,model)
+        # print(dataset,model)
+        # cbs = [checkpoints, early_stopping]
+        print("Training",model_name)
         print("Initializing the trainer")
-        cbs = [checkpoints, early_stopping]
-        trainer = pl.Trainer(callbacks=[], gpus=-1 if args.use_gpu else None,
-                             auto_select_gpus=args.use_gpu,max_epochs=epochs,val_check_interval=0.5,check_val_every_n_epoch=1,
+        trainer = pl.Trainer(callbacks=[], gpus=1 if args.use_gpu else None,
+                             auto_select_gpus=args.use_gpu,max_epochs=epochs,val_check_interval=0.25,check_val_every_n_epoch=1,
                              logger=tb_logger,precision=fp16,num_sanity_val_steps=0,
                              )
 

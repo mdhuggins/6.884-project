@@ -4,7 +4,9 @@ import re
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
+import spacy
 import torch
+from spacy.matcher import PhraseMatcher
 from torch import nn as nn
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import StepLR
@@ -12,7 +14,8 @@ from tqdm import tqdm
 from transformers import BertTokenizerFast, BertModel
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
-from utils import transfer_batch_to_device
+from evaluation import Evaluation
+from utils import transfer_batch_to_device, load_vectors_pandas
 
 
 class LitInputBertModel(pl.LightningModule):
@@ -30,39 +33,46 @@ class LitInputBertModel(pl.LightningModule):
 
         self.concat_rescale_layer = nn.Linear(1068, 768)
 
+        self.accuracy = pl.metrics.Accuracy()
+        self.testaccuracy = pl.metrics.Accuracy()
+        self.val_res = []
+        self.eval_res = []
 
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
 
         self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
-        if os.path.exists("nb.h5"):
-            print("Using cached!")
-            self.numberbatch = pd.read_hdf("nb.h5","mat")
-        else:
-            names = []
-            vecs = []
-            with open("models/graphembeddings/numberbatch-en-19.08.txt") as nb:
-                for line in tqdm(nb):
-                    line = line.strip()
-                    if len(line.split())==2:
-                        continue
-                    name = line.split()[0]
-                    d = pd.Series([float(x) for x in line.split()[1:]])
-                    vecs.append(d)
-                    names.append(name)
-            self.numberbatch = pd.DataFrame(data=vecs,index=names)
-            self.numberbatch.to_hdf("nb.h5","mat")
+        path = "models/graphembeddings/entities_glove_format"
+        self.numberbatch = load_vectors_pandas(path, "wiki.h5", clean_names=True)
+        self.nlp = spacy.load('en_core_web_sm')
+        self.phraseMatcher = PhraseMatcher(self.nlp.vocab, attr='LOWER')
+        terms = [str(x) for x in self.numberbatch.index]
+        patterns = [self.nlp.make_doc(text) for text in terms]
+        self.phraseMatcher.add("Match_By_Phrase", None, *patterns)
+
         print(self.numberbatch.loc["cat"])
-        self.accuracy = pl.metrics.Accuracy()
-        self.test_accuracy = pl.metrics.Accuracy()
+
 
     def knowledge_infusion(self, input_ids, embedding_output):
         stacked_sentences = []
         prefix = ""
+        stacked_retroembeds = []
         for inpt_id_idx, sentence in enumerate(input_ids):
             dec_sentence = self.tokenizer.decode(sentence.cpu().numpy())
+            doc = self.nlp(dec_sentence)
+            matches = self.phraseMatcher(doc)
+
+            # cg_res = self.cg.get_mentions_raw_text(dec_sentence)
+            # d = {
+            #     "contextual_embeddings":last_hidden_state,'tokens_mask':attention_mask,
+            #     "tokenized_text":cg_res["tokenized_text"], 'candidate_spans':cg_res['candidate_spans'],
+            #     'candidate_entities':cg_res["candidate_entities"],"candidate_entity_priors":cg_res['candidate_entity_priors'],
+            #     'candidate_segment_ids':None
+            # }
+            # tst = self.el(**d)
             sentence_vecs = []
             counts = {}
+
             def find_sub_list(sl, l):
                 if str(sl) not in counts.keys():
                     counts[str(sl)] = 0
@@ -80,6 +90,11 @@ class LitInputBertModel(pl.LightningModule):
                     return None
 
             words = re.findall(r'\w+', dec_sentence)
+            words_2 = []
+            for match_id, start, end in matches:
+                span = doc[start:end]
+                words_2.append(span.text)
+
             retroembeds = []
             for word in words:
                 try:
@@ -88,8 +103,21 @@ class LitInputBertModel(pl.LightningModule):
                 except:
                     to_append = np.zeros((300,))
                 retroembeds.append(to_append)
+
+            retroembeds2 = []
+            for word in words_2:
+                if len(word.split(' ')) > 1:
+                    try:
+                        vec = self.numberbatch.loc[prefix + word]
+                        to_append = np.array(vec).reshape(300, )
+                    except:
+                        to_append = np.zeros((300,))
+                else:
+                    to_append = np.zeros((300,))
+                retroembeds2.append(to_append)
             # retroembeds = retroembeddings.get_embeddings_from_input_ids(words).contiguous()
             # retroembeds  = retro_vecs[sample]
+            stacked_retroembeds.append(retroembeds)
             replacement_list = []
             for word in words:
                 toks = self.tokenizer.encode(word, add_special_tokens=False)
@@ -109,16 +137,23 @@ class LitInputBertModel(pl.LightningModule):
                 if not added:
                     t = np.zeros((300,))
                     final_list.append(t)
-            # for word in dec_sentence.split():
-            #     enc_word = self.tokenizer.encode(word, add_special_tokens=False)
-            #     try:
-            #         vec = self.numberbatch.loc[prefix + word]
-            #         to_append = np.array(vec).reshape(300, )
-            #     except:
-            #         to_append = np.zeros((300,))
-            #     for i in range(len(enc_word)):
-            #         sentence_vecs.append(to_append)
+            counts = {}
+            replacement_list = []
+            for word in words_2:
+                toks = self.tokenizer.encode(word, add_special_tokens=False)
+                locs = find_sub_list(toks, [int(x) for x in sentence.cpu().numpy()])
+                if locs is None:
+                    continue
+                replacement_list.append(locs)
+            for idx, id in enumerate(sentence):
+                # Id iN SPECIAL TOKENS
+                for rep_idx, rep_tup in enumerate(replacement_list):
+                    if idx >= rep_tup[0] and idx <= rep_tup[1]:
+                        final_list[idx] = (final_list[idx] + retroembeds2[rep_idx]) / 2.0
+                        break
+
             stacked_sentences.append(final_list)
+
         entity_embeds = torch.tensor(stacked_sentences).float().to(self.device)
 
         concat = torch.cat((entity_embeds, embedding_output), 2)
@@ -139,11 +174,11 @@ class LitInputBertModel(pl.LightningModule):
         # preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
         a = torch.mean(query_last_hidden_state,1)
         b = torch.mean(response_last_hidden_state, 1)
-        c = self.cosine_sim(query_pooler_output, response_pooler_output)
-        # preds = torch.sigmoid(c)
 
-        # loss =mse_loss(preds, labels)
-        loss =  torch.nn.BCEWithLogitsLoss()(c,labels)
+        c = self.cosine_sim(self.query_rescale_layer(a), self.query_rescale_layer(b))
+
+        loss =mse_loss(c, labels)
+        # loss =  torch.nn.BCEWithLogitsLoss()(c,labels)
 
         # Logging to TensorBoard by default
         self.log('train_loss', loss,on_step=True)
@@ -152,60 +187,144 @@ class LitInputBertModel(pl.LightningModule):
 
 
 
+
     def validation_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch,self.device)
-        labels = batch['label'].float()
-
+        all_preds = []
+        val_loss = 0
         query_dict = batch['query_enc_dict']
-        response_dict = batch['response_enc_dict']
-
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                       token_type_ids=response_dict['token_type_ids'],
-                                                                       attention_mask=response_dict['attention_mask'])
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
-        # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
-        preds = self.cosine_sim(query_pooler_output, response_pooler_output).to(self.device)
+        for i in range(len(batch['label'])):
+            labels = batch['label'][i].float()
 
-        val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('val_loss_step', val_loss)
-        self.log('val_acc_step', self.accuracy(preds, labels))
+            response_dict = batch['response_enc_dict'][i]
+
+
+            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+                                                                           token_type_ids=response_dict['token_type_ids'],
+                                                                           attention_mask=response_dict['attention_mask'])
+            response_pooler_output = torch.mean(response_last_hidden_state,1)
+
+            preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
+
+            # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+            # preds = self.cosine_sim(query_pooler_output, response_pooler_output)#.to(self.device)
+            # preds = torch.sigmoid(preds)
+            preds = preds.to('cpu')
+            labels = labels.to('cpu')
+            val_loss += mse_loss(preds, labels)
+            all_preds.append(torch.unsqueeze(preds,1))
+
+
+            # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
+            self.log('val_acc_step', self.accuracy(preds, labels))
+
+        self.log('val_loss_step', val_loss/len(batch['label']))
+        all_preds = torch.cat(all_preds,1)
+        all_preds_np = all_preds.cpu().numpy()
+        np_labels = [x.cpu().numpy() for x in batch['label']]
+        np_labels = np.array(np_labels).transpose()
+        res=[]
+        for i in range(len(batch['label'][0])):
+            b_i = all_preds_np[i,:]
+            idxs = (-b_i).argsort()
+            labels_idx = np_labels[i,idxs]
+            res.append(labels_idx)
+        self.val_res.extend(res)
         return val_loss
 
     def on_validation_epoch_end(self):
         print("Calculating validation accuracy...")
         vacc = self.accuracy.compute()
-        print("Validation accuracy:",vacc)
+        e = Evaluation(self.val_res)
+        MAP = e.MAP() * 100
+        MRR = e.MRR() * 100
+        P1 = e.Precision(1) * 100
+        P5 = e.Precision(5) * 100
+        # print(e)
+        print("Validation accuracy:",vacc),
+        print(MAP,MRR,P1,P5)
         self.log('val_acc_epoch',vacc)
+        self.log('v_MAP',MAP)
+        self.log('v_Mrr', MRR)
+        self.log('v_p1', P1)
+        self.log('v_p5',P5)
+        return vacc,MAP,MRR,P1,P5
+
 
     def test_step(self, batch, batch_idx):
-        batch = transfer_batch_to_device(batch,self.device)
-        labels = batch['label'].float()
-
+        batch = transfer_batch_to_device(batch, self.device)
+        all_preds = []
+        val_loss = 0
         query_dict = batch['query_enc_dict']
-        response_dict = batch['response_enc_dict']
-
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                       token_type_ids=response_dict['token_type_ids'],
-                                                                       attention_mask=response_dict['attention_mask'])
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
-        # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
-        preds = self.cosine_sim(query_pooler_output, response_pooler_output).to(self.device)
+        for i in range(len(batch['label'])):
+            labels = batch['label'][i].float()
 
-        test_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-        self.log('test_loss', test_loss)
-        self.log('test_acc_step', self.test_accuracy(preds, labels))
+            response_dict = batch['response_enc_dict'][i]
 
-        return test_loss
+
+            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+                                                                           token_type_ids=response_dict[
+                                                                               'token_type_ids'],
+                                                                           attention_mask=response_dict[
+                                                                               'attention_mask'])
+            response_pooler_output = torch.mean(response_last_hidden_state,1)
+            preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
+
+            # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output))
+
+            # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
+            # preds = self.cosine_sim(query_pooler_output, response_pooler_output)  # .to(self.device)
+
+            # preds = torch.sigmoid(preds)
+            preds = preds.to('cpu')
+            labels = labels.to('cpu')
+            val_loss += mse_loss(preds, labels)
+            all_preds.append(torch.unsqueeze(preds, 1))
+
+            # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
+            self.log('test_acc_step', self.testaccuracy(preds, labels))
+
+        self.log('test_loss_step', val_loss / len(batch['label']))
+        all_preds = torch.cat(all_preds, 1)
+        all_preds_np = all_preds.cpu().numpy()
+        np_labels = [x.cpu().numpy() for x in batch['label']]
+        np_labels = np.array(np_labels).transpose()
+        res = []
+        for i in range(len(batch['label'][0])):
+            b_i = all_preds_np[i, :]
+            idxs = (-b_i).argsort()
+            labels_idx = np_labels[i, idxs]
+            res.append(labels_idx)
+        self.eval_res.extend(res)
+        return val_loss
 
     def on_test_epoch_end(self):
         print("Calculating test accuracy...")
-        self.log('test_acc_epoch', self.test_accuracy.compute())
+        vacc = self.testaccuracy.compute()
+        e = Evaluation(self.eval_res)
+        MAP = e.MAP() * 100
+        MRR = e.MRR() * 100
+        P1 = e.Precision(1) * 100
+        P5 = e.Precision(5) * 100
+        # print(e)
+        print("Test accuracy:", vacc),
+        print(MAP, MRR, P1, P5)
+        self.log('test_acc_epoch', vacc)
+        self.log('t_MAP', MAP)
+        self.log('t_Mrr', MRR)
+        self.log('t_p1', P1)
+        self.log('t_p5', P5)
+        return vacc,MAP,MRR,P1,P5
 
 
     def configure_optimizers(self):

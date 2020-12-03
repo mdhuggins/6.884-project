@@ -2,6 +2,8 @@ import os
 from typing import Dict, List
 
 import pytorch_lightning as pl
+from tqdm import tqdm
+
 
 class CheckpointEveryNSteps(pl.Callback):
     """
@@ -10,10 +12,10 @@ class CheckpointEveryNSteps(pl.Callback):
     """
 
     def __init__(
-        self,
-        save_step_frequency,
-        prefix="N-Step-Checkpoint",
-        use_modelcheckpoint_filename=False,
+            self,
+            save_step_frequency,
+            prefix="N-Step-Checkpoint",
+            use_modelcheckpoint_filename=False,
     ):
         """
         Args:
@@ -39,7 +41,8 @@ class CheckpointEveryNSteps(pl.Callback):
             ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
             trainer.save_checkpoint(ckpt_path)
 
-def get_extended_attention_mask(attention_mask, input_shape , device):
+
+def get_extended_attention_mask(attention_mask, input_shape, device):
     """
     Makes broadcastable attention and causal masks so that future and masked tokens are ignored.
 
@@ -87,12 +90,13 @@ def get_extended_attention_mask(attention_mask, input_shape , device):
     extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
     return extended_attention_mask
 
+
 def transfer_batch_to_device(batch, device):
     # print("### DEVICE CHECK", device)
     for k in batch.keys():
-        if isinstance(batch[k],Dict):
-            batch[k] = transfer_batch_to_device(batch[k],device)
-        elif isinstance(batch[k],List):
+        if isinstance(batch[k], Dict):
+            batch[k] = transfer_batch_to_device(batch[k], device)
+        elif isinstance(batch[k], List):
             # print(batch[k])
             continue
         else:
@@ -100,3 +104,28 @@ def transfer_batch_to_device(batch, device):
     return batch
 
 
+import pandas as pd
+
+
+def load_vectors_pandas(path, cache="nb.h5",clean_names = False):
+    numberbatch = None
+    if os.path.exists(cache):
+        print("Using cached!")
+        numberbatch = pd.read_hdf(cache, "mat")
+    else:
+        names = []
+        vecs = []
+        with open(path) as nb:
+            for line in tqdm(nb):
+                line = line.strip()
+                if len(line.split()) == 2:
+                    continue
+                name = line.split()[0]
+                if clean_names:
+                    name = name.lower().replace("_"," ")
+                d = pd.Series([float(x) for x in line.split()[1:]])
+                vecs.append(d)
+                names.append(name)
+        numberbatch = pd.DataFrame(data=vecs, index=names)
+        numberbatch.to_hdf(cache, "mat")
+    return numberbatch

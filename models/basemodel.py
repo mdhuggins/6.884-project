@@ -20,7 +20,6 @@ class LitBertModel(pl.LightningModule):
             output_hidden_states = False, # Whether the model returns all hidden-states.
         )
         self.query_rescale_layer = nn.Linear(768, 768)
-        self.response_rescale_layer = nn.Linear(768, 768)
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
         self.accuracy = pl.metrics.Accuracy()
@@ -38,16 +37,16 @@ class LitBertModel(pl.LightningModule):
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        # query_pooler_output = torch.mean(query_last_hidden_state, 1)
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
                                                                        token_type_ids=response_dict['token_type_ids'],
                                                                        attention_mask=response_dict['attention_mask'])
-        # response_pooler_output = torch.mean(response_last_hidden_state, 1)
+        response_pooler_output = torch.mean(response_last_hidden_state, 1)
         # c = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output))
-        c = self.cosine_sim(query_pooler_output, response_pooler_output)
-        # c = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
-        #                         self.query_rescale_layer(response_pooler_output))
+        # c = self.cosine_sim(query_pooler_output, response_pooler_output)
+        c = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
+                                self.query_rescale_layer(response_pooler_output))
         # preds = torch.sigmoid(c)
         preds=c
         loss = mse_loss(preds, labels)
@@ -65,23 +64,23 @@ class LitBertModel(pl.LightningModule):
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
             labels = batch['label'][i].float()
 
             response_dict = batch['response_enc_dict'][i]
 
-            # query_pooler_output = torch.mean(query_last_hidden_state,1)
 
             response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
                                                                            token_type_ids=response_dict['token_type_ids'],
                                                                            attention_mask=response_dict['attention_mask'])
-            # response_pooler_output = torch.mean(response_last_hidden_state,1)
+            response_pooler_output = torch.mean(response_last_hidden_state,1)
 
-            # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
+            preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
 
             # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
-            preds = self.cosine_sim(query_pooler_output, response_pooler_output)#.to(self.device)
+            # preds = self.cosine_sim(query_pooler_output, response_pooler_output)#.to(self.device)
             # preds = torch.sigmoid(preds)
             preds = preds.to('cpu')
             labels = labels.to('cpu')
@@ -122,6 +121,7 @@ class LitBertModel(pl.LightningModule):
         self.log('v_Mrr', MRR)
         self.log('v_p1', P1)
         self.log('v_p5',P5)
+        return vacc,MAP,MRR,P1,P5
 
 
     def test_step(self, batch, batch_idx):
@@ -132,7 +132,7 @@ class LitBertModel(pl.LightningModule):
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        # query_pooler_output = torch.mean(query_last_hidden_state, 1)
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
             labels = batch['label'][i].float()
@@ -145,13 +145,13 @@ class LitBertModel(pl.LightningModule):
                                                                                'token_type_ids'],
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'])
-            # response_pooler_output = torch.mean(response_last_hidden_state,1)
-            # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
+            response_pooler_output = torch.mean(response_last_hidden_state,1)
+            preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
 
             # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output))
 
             # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
-            preds = self.cosine_sim(query_pooler_output, response_pooler_output)  # .to(self.device)
+            # preds = self.cosine_sim(query_pooler_output, response_pooler_output)  # .to(self.device)
 
             # preds = torch.sigmoid(preds)
             preds = preds.to('cpu')
@@ -192,7 +192,7 @@ class LitBertModel(pl.LightningModule):
         self.log('t_Mrr', MRR)
         self.log('t_p1', P1)
         self.log('t_p5', P5)
-
+        return vacc,MAP,MRR,P1,P5
     # def configure_optimizers(self):
     #     optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
     #     return optimizer
