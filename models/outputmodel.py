@@ -8,11 +8,12 @@ from spacy.matcher import PhraseMatcher
 from torch import nn as nn
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.data.dataloader import default_collate
 from transformers import BertTokenizerFast, BertModel
 
 from evaluation import Evaluation
-from utils import transfer_batch_to_device, load_vectors_pandas
-
+from utils import transfer_batch_to_device, load_vectors_pandas, get_retro_embeds
+import dask.dataframe as dd
 
 #
 #
@@ -324,10 +325,30 @@ from utils import transfer_batch_to_device, load_vectors_pandas
 #         return optimizer
 #
 
-class LitOutputBertModel(pl.LightningModule):
 
-    def __init__(self, learning_rate = 5e-4):
+class LitOutputBertModel(pl.LightningModule):
+    @staticmethod
+    def col_fn(x):
+        res = default_collate(x)
+        query_dict = res['query_enc_dict']
+        q_retro = get_retro_embeds(query_dict["input_ids"])
+        response_dict = res['response_enc_dict']
+        if isinstance(response_dict, list):
+            r_retro = []
+            for i in range(len(response_dict)):
+                r_retro.append(get_retro_embeds(response_dict[i]["input_ids"]))
+        else:
+            r_retro = get_retro_embeds(response_dict["input_ids"])
+        res['q_retro'] = q_retro
+        res['r_retro'] = r_retro
+        return res
+
+
+
+
+    def __init__(self, name):
         super().__init__()
+        self.name = name
         bertmodel = "bert-base-uncased"
         self.bert = BertModel.from_pretrained(
             bertmodel,# Use the 12-layer BERT model, with an uncased vocab.
@@ -372,128 +393,38 @@ class LitOutputBertModel(pl.LightningModule):
         # model = None
         # gc.collect()
         path = "models/graphembeddings/entities_glove_format"
-        self.numberbatch = load_vectors_pandas(path,"wiki.h5",clean_names=True)
-        self.nlp = spacy.load('en_core_web_sm')
-        self.phraseMatcher = PhraseMatcher(self.nlp.vocab, attr='LOWER')
-        terms = [str(x) for x in self.numberbatch.index]
-        patterns = [self.nlp.make_doc(text) for text in terms]
-        self.phraseMatcher.add("Match_By_Phrase", None, *patterns)
-
-        print(self.numberbatch.loc["cat"])
+        # print("Loading vecs")
+        # self.numberbatch = load_vectors_pandas(path,"wiki.h5",clean_names=True)
+        # self.numberbatch.index = self.numberbatch.index.map(str)
+        # ddf = dd.from_pandas(self.numberbatch, npartitions=20)
+        # self.numberbatch = ddf
+        # print("LOading spacy")
+        # self.nlp = spacy.load('en_core_web_sm')
+        # self.phraseMatcher = PhraseMatcher(self.nlp.vocab, attr='LOWER')
+        # print("Creating matcher")
+        # terms = map(str,self.numberbatch.index)
+        # # terms = [str(x) for x in self.numberbatch.index]
+        # patterns = [self.nlp.make_doc(text) for text in terms]
+        #
+        # self.phraseMatcher.add("Match_By_Phrase", None, *patterns)
+        # print("TEsting vecs")
+        # print(self.numberbatch.loc["cat"])
 
 
 
     def on_train_epoch_start(self):
-        print("Starting training epoch...")
+        pass
+        # print("Starting training epoch...")
         # if self.current_epoch == 2:
         #     print("Unfreezing in second epoch")
-        print("Freezing bert...")
+        # print("Freezing bert...")
         # for p in self.bert.parameters():
         #     p.requires_grad = True
-        print("Done")
+        # print("Done")
     def on_train_epoch_end(self, outputs):
         print("Finished training epoch...")
 
-    def knowledge_infusion(self, input_ids,last_hidden_state,attention_mask):
-        stacked_sentences = []
-        prefix = ""
-        stacked_retroembeds = []
-        for inpt_id_idx, sentence in enumerate(input_ids):
-            dec_sentence = self.tokenizer.decode(sentence.cpu().numpy())
-            doc = self.nlp(dec_sentence)
-            matches = self.phraseMatcher(doc)
-
-            # cg_res = self.cg.get_mentions_raw_text(dec_sentence)
-            # d = {
-            #     "contextual_embeddings":last_hidden_state,'tokens_mask':attention_mask,
-            #     "tokenized_text":cg_res["tokenized_text"], 'candidate_spans':cg_res['candidate_spans'],
-            #     'candidate_entities':cg_res["candidate_entities"],"candidate_entity_priors":cg_res['candidate_entity_priors'],
-            #     'candidate_segment_ids':None
-            # }
-            # tst = self.el(**d)
-            sentence_vecs = []
-            counts = {}
-            def find_sub_list(sl, l):
-                if str(sl) not in counts.keys():
-                    counts[str(sl)] = 0
-                counts[str(sl)] += 1
-                results = []
-                sll = len(sl)
-                for ind in (i for i, e in enumerate(l) if e == sl[0]):
-                    if l[ind:ind + sll] == sl:
-                        results.append((ind, ind + sll - 1))
-                try:
-                    r = results[counts[str(sl)] - 1]
-
-                    return r
-                except Exception as t:
-                    return None
-
-            words = re.findall(r'\w+', dec_sentence)
-            words_2 = []
-            for match_id, start, end in matches:
-                span = doc[start:end]
-                words_2.append(span.text)
-
-            retroembeds = []
-            for word in words:
-                try:
-                    vec = self.numberbatch.loc[prefix + word]
-                    to_append = np.array(vec).reshape(300, )
-                except:
-                    to_append = np.zeros((300,))
-                retroembeds.append(to_append)
-
-            retroembeds2 = []
-            for word in words_2:
-                if len(word.split(' '))>1:
-                    try:
-                        vec = self.numberbatch.loc[prefix + word]
-                        to_append = np.array(vec).reshape(300, )
-                    except:
-                        to_append = np.zeros((300,))
-                else:
-                    to_append = np.zeros((300,))
-                retroembeds2.append(to_append)
-            # retroembeds = retroembeddings.get_embeddings_from_input_ids(words).contiguous()
-            # retroembeds  = retro_vecs[sample]
-            stacked_retroembeds.append(retroembeds)
-            replacement_list = []
-            for word in words:
-                toks = self.tokenizer.encode(word, add_special_tokens=False)
-                locs = find_sub_list(toks, [int(x) for x in sentence.cpu().numpy()])
-                if locs is None:
-                    continue
-                replacement_list.append(locs)
-            final_list = []
-            for idx, id in enumerate(sentence):
-                # Id iN SPECIAL TOKENS
-                added = False
-                for rep_idx, rep_tup in enumerate(replacement_list):
-                    if idx >= rep_tup[0] and idx <= rep_tup[1]:
-                        final_list.append(retroembeds[rep_idx])
-                        added = True
-                        break
-                if not added:
-                    t = np.zeros((300,))
-                    final_list.append(t)
-            counts = {}
-            replacement_list=[]
-            for word in words_2:
-                toks = self.tokenizer.encode(word, add_special_tokens=False)
-                locs = find_sub_list(toks, [int(x) for x in sentence.cpu().numpy()])
-                if locs is None:
-                    continue
-                replacement_list.append(locs)
-            for idx, id in enumerate(sentence):
-                # Id iN SPECIAL TOKENS
-                for rep_idx, rep_tup in enumerate(replacement_list):
-                    if idx >= rep_tup[0] and idx <= rep_tup[1]:
-                        final_list[idx] = (final_list[idx]+retroembeds2[rep_idx])/2.0
-                        break
-
-            stacked_sentences.append(final_list)
-        retro_embeds = torch.tensor(stacked_sentences).float().to(self.device)
+    def knowledge_infusion(self, input_ids,last_hidden_state,attention_mask,retro_embeds):
         original_retro_embeds = retro_embeds
         retro_embeds = self.decompressor(retro_embeds)
         adapter_down = retro_embeds+last_hidden_state
@@ -538,9 +469,15 @@ class LitOutputBertModel(pl.LightningModule):
         response_dict = batch['response_enc_dict']
 
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'], token_type_ids=query_dict['token_type_ids'], attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(query_dict["input_ids"],query_last_hidden_state, attention_mask=query_dict['attention_mask'])
+        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(query_dict["input_ids"],
+                                                                                                  query_last_hidden_state,
+                                                                                                  attention_mask=query_dict['attention_mask'],
+                                                                                                  retro_embeds=batch["q_retro"])
         response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'], attention_mask=response_dict['attention_mask'])
-        response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(response_dict["input_ids"],response_last_hidden_state, attention_mask=response_dict['attention_mask'])
+        response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(response_dict["input_ids"],
+                                                                                                           response_last_hidden_state,
+                                                                                                           attention_mask=response_dict['attention_mask'],
+                                                                                                           retro_embeds=batch["r_retro"])
         a = self.query_rescale_layer(query_pooler_output)
         b = self.query_rescale_layer(response_pooler_output)
         c = self.cosine_sim(a, b)
@@ -556,7 +493,9 @@ class LitOutputBertModel(pl.LightningModule):
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(query_dict["input_ids"],query_last_hidden_state, attention_mask=query_dict['attention_mask'])
+        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(
+            query_dict["input_ids"],query_last_hidden_state,
+            attention_mask=query_dict['attention_mask'], retro_embeds=batch["q_retro"])
 
 
         for i in range(len(batch['label'])):
@@ -570,7 +509,7 @@ class LitOutputBertModel(pl.LightningModule):
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'])
             response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(
-                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'])
+                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],retro_embeds=batch["r_retro"][i])
 
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
@@ -609,6 +548,7 @@ class LitOutputBertModel(pl.LightningModule):
         P1 = e.Precision(1) * 100
         P5 = e.Precision(5) * 100
         # print(e)
+
         print("Validation accuracy:", vacc),
         print(MAP, MRR, P1, P5)
         self.log('val_acc_epoch', vacc)
@@ -626,7 +566,9 @@ class LitOutputBertModel(pl.LightningModule):
         query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(query_dict["input_ids"],query_last_hidden_state, attention_mask=query_dict['attention_mask'])
+        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(
+            query_dict["input_ids"],query_last_hidden_state,
+            attention_mask=query_dict['attention_mask'], retro_embeds=batch["q_retro"])
 
         for i in range(len(batch['label'])):
             labels = batch['label'][i].float()
@@ -639,7 +581,7 @@ class LitOutputBertModel(pl.LightningModule):
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'])
             response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(
-                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'])
+                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],retro_embeds=batch["r_retro"][i])
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
 
@@ -690,6 +632,6 @@ class LitOutputBertModel(pl.LightningModule):
         return vacc, MAP, MRR, P1, P5
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-5)
-        scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
-        return [optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
+        # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
+        return optimizer#[optimizer], [scheduler]

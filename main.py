@@ -1,8 +1,12 @@
 import os
 from argparse import ArgumentParser
 import pytorch_lightning as pl
+
+from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
+
+seed_everything(seed=42)
 
 from data import AskUbuntuDataModule
 from models.architecturemodel import LitBertArchitectureModel
@@ -13,7 +17,7 @@ from utils import CheckpointEveryNSteps
 # torch.autograd.set_detect_anomaly(True)
 parser = ArgumentParser(description='Train a model to do information retrieval on askubuntu dataset')
 
-parser.add_argument('--save_iters', type=int, default=1000,
+parser.add_argument('--save_iters', type=int, default=5000,
                     help='The amount of steps to save a model')
 parser.add_argument('--epochs', type=int, default=5,
                     help='The amount of epochs to run during training')
@@ -23,8 +27,10 @@ parser.add_argument('--model_dir', default="./models/",
                     help='The directory to save trained/checkpointed models')
 parser.add_argument('--model_save_name', default="test_name",
                     help='The name to save the model with')
-parser.add_argument('--model_type', default="bert",
+parser.add_argument('--model_type', default=None,
                     help='The type of model that we use for evaluation')
+parser.add_argument('--gpus', default=0,type=int,
+                    help='The gpu where the work will be run in')
 parser.add_argument('--train_batch_size', default=16, type=int,
                     help='The batch size for training')
 parser.add_argument('--val_batch_size', default=16, type=int,
@@ -43,6 +49,8 @@ parser.add_argument('--gradient_acc_batches',default=1,type=int,
                     help="The amount batches that we accumulate the gradient to")
 parser.add_argument('--toy_n',default=None,type=int,
                     help="N amount of examples will be used in training.")
+parser.add_argument('--num_workers',default=0,type=int,
+                    help="N amount of workers for dataloading")
 
 args = parser.parse_args()
 
@@ -58,7 +66,7 @@ use_gpu = args.use_gpu
 epochs = args.epochs
 pad_len = args.pad_len
 fp16 = 16 if args.fp16 else 32
-num_workers = 0
+num_workers = args.num_workers
 grad_acc_batchs = args.gradient_acc_batches
 toy_n = args.toy_n
 use_cache = args.use_cache
@@ -78,34 +86,37 @@ datasets_and_models = [
     # ({"pad_len":pad_len,"data_dir":data_dir,"batch_size":train_batch_size,"cache_dir":cache_dir,"num_workers":num_workers,"toy_n":toy_n},
     #        LitOutputBaseModel, {"accumulate_grad_batches":grad_acc_batchs},"outbase"),
 ]
+if model_type is not None:
+    datasets_and_models = [x for x in datasets_and_models if x[3]==model_type]
+    print("Selected a specifc model:",model_type)
+    print(datasets_and_models)
 
 for idx,tup in enumerate(datasets_and_models):
-    try:
+    # try:
         ds = tup[0]
         model = tup[1]
         train_p = tup[2]
         model_name = tup[3]
+        if model.col_fn is not None:
+            ds['col_fn'] = model.col_fn
         # checkpoints
-        # checkpoints = CheckpointEveryNSteps(save_iters)
+        checkpoints = CheckpointEveryNSteps(save_iters)
         # Early stopping
         # early_stopping = EarlyStopping(monitor='val_loss_step')
-        tb_logger = TensorBoardLogger(save_dir="tb_logs", name=
-                                      "model_"+str(idx))
-
+        tb_logger = TensorBoardLogger(save_dir="tb_logs", name=model_name)
         print("Starting...")
         dataset = AskUbuntuDataModule(**ds)
-        model = model()
+        model = model(name=model_name)
         #Additional trainer params
         accumulate_grad_batches = train_p["accumulate_grad_batches"] if "accumulate_grad_batches" in train_p.keys() else None
         # print(dataset,model)
         # cbs = [checkpoints, early_stopping]
         print("Training",model_name)
         print("Initializing the trainer")
-        trainer = pl.Trainer(callbacks=[], gpus=1 if args.use_gpu else None,
+        trainer = pl.Trainer(callbacks=[checkpoints], gpus=[args.gpus] if args.use_gpu else None,
                              auto_select_gpus=args.use_gpu,max_epochs=epochs,val_check_interval=0.25,check_val_every_n_epoch=1,
-                             logger=tb_logger,precision=fp16,num_sanity_val_steps=0,
+                             logger=tb_logger,precision=fp16,num_sanity_val_steps=0
                              )
-
         print("Fitting...")
 
         # trainer.tune(model)
@@ -131,5 +142,5 @@ for idx,tup in enumerate(datasets_and_models):
         print("Done!")
         os.makedirs("models/"+model_name+"/")
         trainer.save_checkpoint("models/"+model_name+"/"+model_name+"_trained")
-    except Exception as e:
-        print(e)
+    # except Exception as e:
+    #     print(e)

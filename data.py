@@ -273,7 +273,7 @@ class AskUbuntuDevTestDataset(Dataset):
 
 class AskUbuntuDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0,toy_n=500,use_cache=False):
+    def __init__(self, data_dir, batch_size, pad_len, cache_dir=None,num_workers=0,toy_n=500,use_cache=False,col_fn=None):
         super().__init__()
         self.root_dir = data_dir
         self.batch_size = batch_size
@@ -282,6 +282,7 @@ class AskUbuntuDataModule(pl.LightningDataModule):
         self.pad_len = pad_len
         self.toy_n=toy_n
         self.use_cache = use_cache
+        self.col_fn = col_fn
 
     def setup(self, stage=None):
         print("Setup is done in the datasets?")
@@ -290,14 +291,14 @@ class AskUbuntuDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             AskUbuntuTrainDataset(toy_n=self.toy_n, toy_pad=self.pad_len, root_dir=self.root_dir, cache_dir=self.cache_dir,use_cache=self.use_cache),
-            batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers)
+            batch_size=self.batch_size, shuffle=True,num_workers=self.num_workers,collate_fn=self.col_fn)
 
     def val_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=False,pad_len=self.pad_len),
-            batch_size=8,num_workers=self.num_workers)
+            batch_size=8,num_workers=2,collate_fn=self.col_fn)
 
     def test_dataloader(self):
         return DataLoader(
             AskUbuntuDevTestDataset(root_dir=self.root_dir, cache_dir=self.cache_dir, test=True,pad_len =self.pad_len),
-            batch_size=8,num_workers=self.num_workers, )
+            batch_size=8,num_workers=2,collate_fn=self.col_fn)

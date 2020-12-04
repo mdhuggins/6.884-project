@@ -7,15 +7,20 @@ from torch import nn as nn
 from torch.nn.functional import mse_loss
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.data.dataloader import default_collate
 
 from evaluation import Evaluation
 from utils import transfer_batch_to_device
 
 
 class LitBertArchitectureModel(pl.LightningModule):
-
-    def __init__(self):
+    @staticmethod
+    def col_fn(x):
+        return default_collate(x)
+    def __init__(self,name):
         super().__init__()
+        self.name = name
+        # archive_file = 'https://allennlp.s3-us-west-2.amazonaws.com/knowbert/models/knowbert_wiki_model.tar.gz'
         archive_file = 'https://allennlp.s3-us-west-2.amazonaws.com/knowbert/models/knowbert_wiki_model.tar.gz'
 
         # load model and batcher
@@ -198,6 +203,6 @@ class LitBertArchitectureModel(pl.LightningModule):
         return vacc, MAP, MRR, P1, P5
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-5)
-        scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
-        return [optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
+        # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
+        return optimizer#[optimizer], [scheduler]

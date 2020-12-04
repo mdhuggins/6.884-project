@@ -4,6 +4,7 @@ from torch import nn as nn
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR, StepLR
+from torch.utils.data.dataloader import default_collate
 from transformers import BertModel
 
 from evaluation import Evaluation
@@ -11,9 +12,13 @@ from utils import transfer_batch_to_device
 import numpy as np
 
 class LitBertModel(pl.LightningModule):
+    @staticmethod
+    def col_fn(x):
+        return default_collate(x)
 
-    def __init__(self):
+    def __init__(self,name):
         super().__init__()
+        self.name = name
         self.bert = BertModel.from_pretrained(
             "bert-base-uncased", # Use the 12-layer BERT model, with an uncased vocab.
             output_attentions = False, # Whether the model returns attentions weights.
@@ -198,10 +203,11 @@ class LitBertModel(pl.LightningModule):
     #     return optimizer
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
         scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
         # scheduler  = torch.optim.lr_scheduler.OneCycleLR(optimizer, 5e-3, total_steps=len(self.train_dataloader()), epochs=1, steps_per_epoch=None,
         #                                     pct_start=0.3, anneal_strategy='linear', cycle_momentum=True,
         #                                     base_momentum=0.85, max_momentum=0.95, div_factor=25.0,
         #                                     final_div_factor=10000.0, last_epoch=-1, verbose=False)
-        return [optimizer], [scheduler]
+        # return optimizer#[optimizer], [scheduler]
+        return optimizer#[optimizer], [scheduler]
