@@ -2,6 +2,7 @@ import os
 import re
 from typing import Dict, List
 
+import h5py
 import pytorch_lightning as pl
 import spacy
 import torch
@@ -111,7 +112,16 @@ def transfer_batch_to_device(batch, device):
 
 
 import pandas as pd
+def load_vectors_wordnet(path,key="tucker_gensen"):
+    ents = []
+    with open("models/graphembeddings/wordnet_synsets_mask_null_vocab.txt") as f:
+        for line in f:
+            ents.append(line.strip())
+    with h5py.File(path, 'r') as fin:
+        emb = fin[key][...]
+    return emb
 
+# load_vectors_wordnet('models/graphembeddings/wordnet_synsets_mask_null_vocab_embeddings_tucker_gensen.hdf5')
 
 def load_vectors_pandas(path, cache="nb.h5",clean_names = False):
     numberbatch = None

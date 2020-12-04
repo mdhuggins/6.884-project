@@ -55,7 +55,9 @@ class LitInputBertModel(pl.LightningModule):
         self.testaccuracy = pl.metrics.Accuracy()
         self.val_res = []
         self.eval_res = []
-
+        self.concat = False
+        self.sum = True
+        self.decompressor = nn.Linear(300,768)
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
 
@@ -73,9 +75,16 @@ class LitInputBertModel(pl.LightningModule):
         # print(self.numberbatch.loc["cat"])
 
 
-    def knowledge_infusion(self, embedding_output,entity_embeds):
-        concat = torch.cat((entity_embeds, embedding_output), 2)
-        representation = self.concat_rescale_layer(concat)
+    def knowledge_infusion(self, entity_embeds, embedding_output):
+        if self.concat:
+            concat = torch.cat((entity_embeds, embedding_output), 2)
+            representation = self.concat_rescale_layer(concat)
+        elif self.sum:
+            # print(entity_embeds.shape)
+            entity_embeds = self.decompressor(entity_embeds)
+            representation = entity_embeds+embedding_output
+        else:
+            representation = embedding_output
 
         return representation
 

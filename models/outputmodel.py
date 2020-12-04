@@ -360,6 +360,7 @@ class LitOutputBertModel(pl.LightningModule):
 
         self.compressor = nn.Linear(300,64)
         self.decompressor = nn.Linear(300,768)
+        self.concat_rescale_layer = nn.Linear(1068,768)
 
         self.dropout = nn.Dropout(0.3)
 
@@ -371,6 +372,8 @@ class LitOutputBertModel(pl.LightningModule):
         self.val_res = []
         self.eval_res = []
         self.tokenizer = BertTokenizerFast.from_pretrained(bertmodel)
+        self.concat = True
+        self.sum = False
         # self.numberbatch = pd.read_hdf("models/mini-2.h5","mat")
         # path = "models/graphembeddings/numberbatch-en-19.08.txt"
 
@@ -426,8 +429,14 @@ class LitOutputBertModel(pl.LightningModule):
 
     def knowledge_infusion(self, input_ids,last_hidden_state,attention_mask,retro_embeds):
         original_retro_embeds = retro_embeds
-        retro_embeds = self.decompressor(retro_embeds)
-        adapter_down = retro_embeds+last_hidden_state
+        if self.concat:
+            concat = torch.cat((retro_embeds, last_hidden_state), 2)
+            adapter_down = self.concat_rescale_layer(concat)
+        elif self.sum:
+            retro_embeds = self.decompressor(retro_embeds)
+            adapter_down = retro_embeds+last_hidden_state
+        else:
+            adapter_down = last_hidden_state
         # adapter_down = self.downscale(last_hidden_state) + retro_embeds
         # adapter_down = self.relu(adapter_down)
         # adapter_down = self.upscale(adapter_down) + last_hidden_state
