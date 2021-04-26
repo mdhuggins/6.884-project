@@ -1,4 +1,5 @@
 import os
+import pickle
 import re
 from typing import Dict, List
 
@@ -10,6 +11,7 @@ from spacy.matcher import PhraseMatcher
 from tqdm import tqdm
 from transformers import BertTokenizerFast
 import numpy as np
+from filelock import Timeout, FileLock
 
 class CheckpointEveryNSteps(pl.Callback):
     """
@@ -127,7 +129,8 @@ def load_vectors_pandas(path, cache="nb.h5",clean_names = False):
     numberbatch = None
     if os.path.exists(cache):
         print("Using cached!")
-        numberbatch = pd.read_hdf(cache, "mat")
+        # numberbatch = pd.read_hdf(cache, "mat")
+        numberbatch = pickle.load(open(cache,"rb"))
     else:
         names = []
         vecs = []
@@ -138,35 +141,56 @@ def load_vectors_pandas(path, cache="nb.h5",clean_names = False):
                     continue
                 name = line.split()[0]
                 if clean_names:
-                    name = name.lower().replace("_"," ")
+                    name = name.replace("_"," ")
                 d = pd.Series([float(x) for x in line.split()[1:]])
                 vecs.append(d)
                 names.append(str(name))
-        numberbatch = pd.DataFrame(data=vecs, index=names)
-        numberbatch.to_hdf(cache, "mat")
+        # numberbatch = pd.DataFrame(data=vecs, index=names)
+        # numberbatch.to_hdf(cache, "mat")
+        numberbatch = dict([x for x in zip(names,vecs)])
+        lock = FileLock(cache+".lock")
+        with lock:
+            # open("high_ground.txt", "a").write("You were the chosen one.")
+            pickle.dump(numberbatch,open(cache,"wb"))
     return numberbatch
 import dask.dataframe as dd
-def get_embeddings(path):
-    numberbatch = load_vectors_pandas(path, "wiki.h5", clean_names=True)
-    numberbatch.index = numberbatch.index.map(str)
-    ddf = dd.from_pandas(numberbatch, npartitions=20)
-    numberbatch = ddf
-    return numberbatch
+def get_embeddings(path,cache="wiki.h5"):
+    numberbatch = load_vectors_pandas(path, cache, clean_names=True)
+    vecs = numberbatch
+    # numberbatch.index = numberbatch.index.map(str)
+    # vecs = {}
+    # for i in numberbatch.index:
+    #     vecs[i] = numberbatch.loc[i]
+    # ddf = dd.from_pandas(numberbatch, npartitions=20)
+    # numberbatch = ddf
+    return vecs
 def get_phrase_matcher(numberbatch,nlp):
-    phraseMatcher = PhraseMatcher(nlp.vocab, attr='LOWER')
     print("Creating matcher")
-    terms = map(str, numberbatch.index)
-    # terms = [str(x) for x in self.numberbatch.index]
-    patterns = [nlp.make_doc(text) for text in terms]
+    if os.path.exists("matcher"):
+        lock = FileLock("matcher.lock")
+        with lock:
+            # open("high_ground.txt", "a").write("You were the chosen one.")
+            phraseMatcher = pickle.load(open("matcher.bin","rb"))
 
-    phraseMatcher.add("Match_By_Phrase", None, *patterns)
+    else:
+        phraseMatcher = PhraseMatcher(nlp.vocab, attr='LOWER')
+        terms = numberbatch.keys() if isinstance(numberbatch,dict) else  map(str, numberbatch.index)
+        # terms = [str(x) for x in self.numberbatch.index]
+        patterns = [nlp.make_doc(text) for text in terms]
+
+        phraseMatcher.add("Match_By_Phrase", None, *patterns)
+        lock = FileLock("matcher.lock")
+        with lock:
+            # open("high_ground.txt", "a").write("You were the chosen one.")
+            pickle.dump(phraseMatcher,open("matcher.bin","wb"))
+
     return phraseMatcher
 
-def get_retro_embeds(input_ids):
+def get_retro_embeds(input_ids,path_to_embs="models/graphembeddings/numberbatch-en-19.08.txt"):
     global initialized
     if not initialized :
         print("Initializing in thread...")
-        initialize_retro()
+        initialize_retro(path_to_embs)
         print("ready.")
 
     stacked_sentences = []
@@ -174,17 +198,10 @@ def get_retro_embeds(input_ids):
     stacked_retroembeds = []
     for inpt_id_idx, sentence in enumerate(input_ids):
         dec_sentence = tokenizer.decode(sentence.cpu().numpy())
-        doc = nlp(dec_sentence)
+        doc = nlp.tokenizer(dec_sentence)
         matches = phraseMatcher(doc)
 
-        # cg_res = self.cg.get_mentions_raw_text(dec_sentence)
-        # d = {
-        #     "contextual_embeddings":last_hidden_state,'tokens_mask':attention_mask,
-        #     "tokenized_text":cg_res["tokenized_text"], 'candidate_spans':cg_res['candidate_spans'],
-        #     'candidate_entities':cg_res["candidate_entities"],"candidate_entity_priors":cg_res['candidate_entity_priors'],
-        #     'candidate_segment_ids':None
-        # }
-        # tst = self.el(**d)
+
         sentence_vecs = []
         counts = {}
 
@@ -204,54 +221,23 @@ def get_retro_embeds(input_ids):
             except Exception as t:
                 return None
 
-        words = re.findall(r'\w+', dec_sentence)
+        # words = re.findall(r'\w+', dec_sentence)
         words_2 = []
         for match_id, start, end in matches:
             span = doc[start:end]
             words_2.append(span.text)
-
-        retroembeds = []
-        for word in words:
+        # print("NB MATCHES:",len(matches))
+        retroembeds_2 = []
+        for word in words_2:
             try:
-                vec = numberbatch.loc[prefix + word]
+                vec = numberbatch[word]#.compute()
                 to_append = np.array(vec).reshape(300, )
             except:
                 to_append = np.zeros((300,))
-            retroembeds.append(to_append)
+            retroembeds_2.append(to_append)
 
-        retroembeds2 = []
-        for word in words_2:
-            if len(word.split(' ')) > 1:
-                try:
-                    vec = numberbatch.loc[prefix + word]
-                    to_append = np.array(vec).reshape(300, )
-                except:
-                    to_append = np.zeros((300,))
-            else:
-                to_append = np.zeros((300,))
-            retroembeds2.append(to_append)
-        # retroembeds = retroembeddings.get_embeddings_from_input_ids(words).contiguous()
-        # retroembeds  = retro_vecs[sample]
-        stacked_retroembeds.append(retroembeds)
-        replacement_list = []
-        for word in words:
-            toks = tokenizer.encode(word, add_special_tokens=False)
-            locs = find_sub_list(toks, [int(x) for x in sentence.cpu().numpy()])
-            if locs is None:
-                continue
-            replacement_list.append(locs)
-        final_list = []
-        for idx, id in enumerate(sentence):
-            # Id iN SPECIAL TOKENS
-            added = False
-            for rep_idx, rep_tup in enumerate(replacement_list):
-                if idx >= rep_tup[0] and idx <= rep_tup[1]:
-                    final_list.append(retroembeds[rep_idx])
-                    added = True
-                    break
-            if not added:
-                t = np.zeros((300,))
-                final_list.append(t)
+        # res = numberbatch.loc[numberbatch.index.isin(words_2)].compute()
+        # res = numberbatch.loc[numberbatch.index.isin(words_2)].compute()
         counts = {}
         replacement_list = []
         for word in words_2:
@@ -260,26 +246,33 @@ def get_retro_embeds(input_ids):
             if locs is None:
                 continue
             replacement_list.append(locs)
+        final_list = [np.zeros((300,)) for x in sentence]
         for idx, id in enumerate(sentence):
             # Id iN SPECIAL TOKENS
             for rep_idx, rep_tup in enumerate(replacement_list):
                 if idx >= rep_tup[0] and idx <= rep_tup[1]:
-                    final_list[idx] = (final_list[idx] + retroembeds2[rep_idx]) / 2.0
-                    break
+                    if np.sum(final_list[idx]) == 0:
+                        final_list[idx] = retroembeds_2[rep_idx]  # ) / 2.0
+                    else:
+                        final_list[idx] *= retroembeds_2[rep_idx]  #
 
         stacked_sentences.append(final_list)
     retro_embeds = torch.tensor(stacked_sentences).float()
     return retro_embeds
+
 tokenizer = numberbatch = nlp = phraseMatcher = None
 initialized = False
-def initialize_retro():
+def initialize_retro(path_to_embeddings,
+                     cache="wiki.h5"):
     global tokenizer
     global numberbatch
     global nlp
     global phraseMatcher
     global initialized
     tokenizer = BertTokenizerFast.from_pretrained('bert-base-cased')
-    numberbatch = get_embeddings("models/graphembeddings/entities_glove_format")
+    # numberbatch = get_embeddings("/Users/pedro/Documents/Documents - Pedro’s MacBook Pro/"
+    #                              "git/6.884-project/models/numberbatch-en-19.08.txt")
+    numberbatch = get_embeddings(path_to_embeddings,cache)
     nlp = spacy.load('en_core_web_sm')
     phraseMatcher = get_phrase_matcher(numberbatch, nlp)
     initialized = True

@@ -23,7 +23,7 @@ class AskUbuntuTrainDataset(Dataset):
         self.pad_len = 0
         self.use_cache = use_cache
         if cache_dir is not None:
-            train_cache_file = os.path.join(cache_dir, "training_data.pkl")
+            train_cache_file = os.path.join(cache_dir, f"training_data-{toy_n}-{toy_pad}-{neg_pos_ratio}.pkl")
 
         print("Loading training data...")
 

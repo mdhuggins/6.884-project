@@ -1,19 +1,20 @@
-import re
+import collections
 
 import numpy as np
 import pytorch_lightning as pl
-import spacy
 import torch
-from spacy.matcher import PhraseMatcher
 from torch import nn as nn
+from torch.nn import CrossEntropyLoss
 from torch.nn.functional import mse_loss
-from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.dataloader import default_collate
-from transformers import BertTokenizerFast, BertModel
+from transformers import BertTokenizerFast, BertModel, BertConfig, AdamW, \
+    get_linear_schedule_with_warmup
+from transformers.modeling_outputs import MaskedLMOutput
+from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 
 from evaluation import Evaluation
-from utils import transfer_batch_to_device, load_vectors_pandas, get_retro_embeds
-import dask.dataframe as dd
+from utils import transfer_batch_to_device, get_retro_embeds
+
 
 #
 #
@@ -343,98 +344,66 @@ class LitOutputBertModel(pl.LightningModule):
         res['r_retro'] = r_retro
         return res
 
-
-
-
-    def __init__(self, name):
+    def __init__(self, name, config=None, pretrained_name="bert-base-uncased", tokenizer=None, lr=2e-5,
+                 total_steps=100,concat=False):
         super().__init__()
         self.name = name
-        bertmodel = "bert-base-uncased"
-        self.bert = BertModel.from_pretrained(
-            bertmodel,# Use the 12-layer BERT model, with an uncased vocab.
-            output_attentions=False,# Whether the model returns attentions weights.
-            output_hidden_states=False,# Whether the model returns all hidden-states.
-        )
+        self.lr = lr
+        self.total_steps = total_steps
+        bertmodel = pretrained_name
+        if tokenizer is None:
+            tokenizer = BertTokenizerFast.from_pretrained(bertmodel)
+        if config is None:
+            config = BertConfig.from_pretrained(bertmodel)
+        self.config = config
+        self.bert = BertModel.from_pretrained(bertmodel, add_pooling_layer=False)
 
         self.query_rescale_layer = nn.Linear(768, 768)
-
-        self.compressor = nn.Linear(300,64)
-        self.decompressor = nn.Linear(300,768)
-        self.concat_rescale_layer = nn.Linear(1068,768)
-
+        self.concat_dim = 64
+        self.compressor = nn.Linear(300, self.concat_dim)
+        self.decompressor = nn.Linear(300, 768)
+        gain = 0.0001
+        s = torch.nn.init.uniform_(self.decompressor.weight) * gain
+        self.decompressor.weight = nn.parameter.Parameter(s)
+        self.decompressor.bias.data.fill_(gain)
+        self.concat_rescale_layer = nn.Linear(768+self.concat_dim, 768)
         self.dropout = nn.Dropout(0.3)
-
-        self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
+        self.cosine_sim = nn.CosineSimilarity(dim=1)
+        self.nonlinear = nn.ReLU()
         # self.save_hyperparameters()
 
         self.accuracy = pl.metrics.Accuracy()
         self.testaccuracy = pl.metrics.Accuracy()
         self.val_res = []
         self.eval_res = []
-        self.tokenizer = BertTokenizerFast.from_pretrained(bertmodel)
-        self.concat = True
-        self.sum = False
-        # self.numberbatch = pd.read_hdf("models/mini-2.h5","mat")
-        # path = "models/graphembeddings/numberbatch-en-19.08.txt"
+        self.tokenizer = tokenizer
+        self.concat = concat
+        self.sum = not self.concat
+        self.freeze_encoder_ = True
+        self.unfreeze_epoch = 200 # zero indexed
+        # if self.freeze_encoder_:
+        #     self.freeze_encoder()
+        self.additional_down = nn.Linear(300,100)
+        self.mixer = nn.Linear(100,100)
+        self.additional_up = nn.Linear(100,300)
 
-        # archive_file = 'https://allennlp.s3-us-west-2.amazonaws.com/knowbert/models/knowbert_wiki_model.tar.gz'
-
-        # load model and batcher
-        # params = Params({"archive_file": archive_file})
-        # model = ModelArchiveFromParams.from_params(params=params)
-        # self.el = model.soldered_kgs['wiki'].entity_linker
-        # cache_cg_pkl = 'cache_cg.pkl'
-        # if not os.path.exists(cache_cg_pkl):
-        #     self.cg = WikiCandidateMentionGenerator()
-        #     data = {}
-        #     data['p_e_m'] = self.cg.p_e_m
-        #     data['p_e_m_low'] = self.cg.p_e_m_low
-        #     data['mention_total_freq'] =  self.cg.mention_total_freq
-        #     pickle.dump(data, open(cache_cg_pkl,'wb'))
-        # else:
-        #     self.cg = WikiCandidateMentionGenerator(pickle_cache_file=cache_cg_pkl)
-        # model = None
-        # gc.collect()
-        path = "models/graphembeddings/entities_glove_format"
-        # print("Loading vecs")
-        # self.numberbatch = load_vectors_pandas(path,"wiki.h5",clean_names=True)
-        # self.numberbatch.index = self.numberbatch.index.map(str)
-        # ddf = dd.from_pandas(self.numberbatch, npartitions=20)
-        # self.numberbatch = ddf
-        # print("LOading spacy")
-        # self.nlp = spacy.load('en_core_web_sm')
-        # self.phraseMatcher = PhraseMatcher(self.nlp.vocab, attr='LOWER')
-        # print("Creating matcher")
-        # terms = map(str,self.numberbatch.index)
-        # # terms = [str(x) for x in self.numberbatch.index]
-        # patterns = [self.nlp.make_doc(text) for text in terms]
-        #
-        # self.phraseMatcher.add("Match_By_Phrase", None, *patterns)
-        # print("TEsting vecs")
-        # print(self.numberbatch.loc["cat"])
-
-
-
-    def on_train_epoch_start(self):
-        pass
-        # print("Starting training epoch...")
-        # if self.current_epoch == 2:
-        #     print("Unfreezing in second epoch")
-        # print("Freezing bert...")
-        # for p in self.bert.parameters():
-        #     p.requires_grad = True
-        # print("Done")
-    def on_train_epoch_end(self, outputs):
-        print("Finished training epoch...")
-
-    def knowledge_infusion(self, input_ids,last_hidden_state,attention_mask,retro_embeds):
+    def knowledge_infusion(self, input_ids, last_hidden_state, attention_mask, retro_embeds):
         original_retro_embeds = retro_embeds
+        retro_embeds = self.additional_down(retro_embeds)
+        retro_embeds = self.nonlinear(retro_embeds)
+        retro_embeds = self.mixer(retro_embeds)
+        retro_embeds = self.nonlinear(retro_embeds)
+        retro_embeds = self.additional_up(retro_embeds)
+        retro_embeds = self.nonlinear(retro_embeds)
         if self.concat:
+            retro_embeds = self.compressor(retro_embeds)
             concat = torch.cat((retro_embeds, last_hidden_state), 2)
             adapter_down = self.concat_rescale_layer(concat)
         elif self.sum:
             retro_embeds = self.decompressor(retro_embeds)
-            adapter_down = retro_embeds+last_hidden_state
+            # print(retro_embeds)
+            # print(last_hidden_state)
+            adapter_down = retro_embeds + last_hidden_state
         else:
             adapter_down = last_hidden_state
         # adapter_down = self.downscale(last_hidden_state) + retro_embeds
@@ -451,9 +420,9 @@ class LitOutputBertModel(pl.LightningModule):
         # retro_embeds = self.convolver4(retro_embeds)
         # retro_embeds = torch.flatten(retro_embeds,1)
         # retro_embeds = self.comp(retro_embeds)
-        pre_pool = adapter_down
-        retro_embeds = torch.mean(adapter_down,1)
-        return retro_embeds,original_retro_embeds, pre_pool
+        # pre_pool = adapter_down
+        mean_retro_embeds = torch.mean(adapter_down, 1)
+        return adapter_down, original_retro_embeds, mean_retro_embeds
 
     def mm_loss(self, transformer_outputs, retro_vecs):
         margin_calc_amount = 5
@@ -471,58 +440,151 @@ class LitOutputBertModel(pl.LightningModule):
         ent_loss /= (margin_calc_amount * 1.0)
         return ent_loss
 
+    def forward(self,
+                input_ids=None,
+                attention_mask=None,
+                token_type_ids=None,
+                position_ids=None,
+                head_mask=None,
+                inputs_embeds=None,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                labels=None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+                retro_vecs=None
+                ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        r = self.bert(input_ids,
+                      attention_mask=attention_mask,
+                      token_type_ids=token_type_ids,
+                      position_ids=position_ids,
+                      head_mask=head_mask,
+                      inputs_embeds=inputs_embeds,
+                      encoder_hidden_states=encoder_hidden_states,
+                      encoder_attention_mask=encoder_attention_mask,
+                      output_attentions=output_attentions,
+                      output_hidden_states=output_hidden_states,
+                      return_dict=return_dict,
+                      retro_vecs=retro_vecs)
+        for name,param in self.bert.named_parameters(recurse=True):
+            if "retro" in name or "norm" in name:
+                param.requires_grad = True
+                print(name,"requires grad:",True)
+            else:
+                param.requires_grad = False
+                print(name,"requires grad:",False)
+
+        query_last_hidden_state = r.last_hidden_state
+        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(input_ids,
+                                                                                                  query_last_hidden_state,
+                                                                                                  attention_mask=attention_mask,
+                                                                                                  retro_embeds=retro_vecs)
+        r.last_hidden_state = query_pooler_output
+        outputs = r
+        sequence_output = outputs[0]
+        prediction_scores = self.training_bert(sequence_output)
+
+        masked_lm_loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()  # -100 index = padding token
+            y_pred = prediction_scores.view(-1, self.config.vocab_size)
+            y = labels.view(-1)
+            masked_lm_loss = loss_fct(y_pred, y)
+
+        if not return_dict:
+            output = (prediction_scores,) + outputs[2:]
+            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
+
+        return MaskedLMOutput(
+            loss=masked_lm_loss,
+            logits=prediction_scores,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+    def freeze_encoder(self):
+        print("Freezing the encoder.")
+        for parameter in self.bert.parameters(recurse=True):
+            parameter.requires_grad = False
+        self.bert.train(False)
+
+    def unfreeze_encoder(self):
+        print("Unfreezing the encoder.")
+        for parameter in self.bert.parameters(recurse=True):
+            parameter.requires_grad = True
+        self.bert.train(True)
+
+    def on_train_batch_start(self, batch, batch_idx,dataloader_idx):
+        # if batch_idx == self.unfreeze_epoch:
+        #     self.unfreeze_encoder()
+        #     opt = self.optimizers()
+        #     opt.state = collections.defaultdict(dict)
+        pass
     def training_step(self, batch, batch_idx):
         labels = batch['label'].float()
-
         query_dict = batch['query_enc_dict']
         response_dict = batch['response_enc_dict']
 
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'], token_type_ids=query_dict['token_type_ids'], attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(query_dict["input_ids"],
-                                                                                                  query_last_hidden_state,
-                                                                                                  attention_mask=query_dict['attention_mask'],
-                                                                                                  retro_embeds=batch["q_retro"])
-        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'], attention_mask=response_dict['attention_mask'])
-        response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(response_dict["input_ids"],
-                                                                                                           response_last_hidden_state,
-                                                                                                           attention_mask=response_dict['attention_mask'],
-                                                                                                           retro_embeds=batch["r_retro"])
+
+        r = self.bert(query_dict['input_ids'], token_type_ids=query_dict['token_type_ids'],
+                      attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = r.last_hidden_state
+        query_pooler_output = r.pooler_output
+        query_pre_pooler_output, query_retroembeds, query_pooler_output = self.knowledge_infusion(
+            query_dict["input_ids"],
+            query_last_hidden_state,
+            attention_mask=query_dict['attention_mask'],
+            retro_embeds=batch["q_retro"])
+        r = self.bert(response_dict['input_ids'], token_type_ids=response_dict['token_type_ids'],
+                      attention_mask=response_dict['attention_mask'])
+        response_last_hidden_state = r.last_hidden_state
+        response_pooler_output = r.pooler_output
+        response_pre_pooler_output, response_retroembeds, response_pooler_output = self.knowledge_infusion(
+            response_dict["input_ids"],
+            response_last_hidden_state,
+            attention_mask=response_dict['attention_mask'],
+            retro_embeds=batch["r_retro"])
         a = self.query_rescale_layer(query_pooler_output)
         b = self.query_rescale_layer(response_pooler_output)
         c = self.cosine_sim(a, b)
         loss = mse_loss(c, labels)
-        self.log('train_loss',loss)
-        return loss#loss,mm_loss, base_train_loss,minimize
+        self.log('train_loss', loss)
+        return loss  # loss,mm_loss, base_train_loss,minimize
 
     def validation_step(self, batch, batch_idx):
         batch = transfer_batch_to_device(batch, self.device)
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                 token_type_ids=query_dict['token_type_ids'],
-                                                                 attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(
-            query_dict["input_ids"],query_last_hidden_state,
+        r = self.bert(query_dict['input_ids'], token_type_ids=query_dict['token_type_ids'],
+                      attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = r.last_hidden_state
+        query_pooler_output = r.pooler_output
+        query_pre_pooler_output, query_retroembeds, query_pooler_output = self.knowledge_infusion(
+            query_dict["input_ids"], query_last_hidden_state,
             attention_mask=query_dict['attention_mask'], retro_embeds=batch["q_retro"])
-
 
         for i in range(len(batch['label'])):
             labels = batch['label'][i].float()
 
             response_dict = batch['response_enc_dict'][i]
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-            response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(
-                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],retro_embeds=batch["r_retro"][i])
+            r = self.bert(response_dict['input_ids'],
+                          token_type_ids=response_dict[
+                              'token_type_ids'],
+                          attention_mask=response_dict[
+                              'attention_mask'])
+            response_last_hidden_state = r.last_hidden_state
+            response_pooler_output = r.pooler_output
+            response_pre_pooler_output, response_retroembeds, response_pooler_output = self.knowledge_infusion(
+                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],
+                retro_embeds=batch["r_retro"][i])
 
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
-
+            # print(preds)
             # preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)).to(self.device)
             # preds = self.cosine_sim(query_pooler_output, response_pooler_output)#.to(self.device)
             # preds = torch.sigmoid(preds)
@@ -532,7 +594,7 @@ class LitOutputBertModel(pl.LightningModule):
             all_preds.append(torch.unsqueeze(preds, 1))
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('val_acc_step', self.accuracy(preds, labels))
+            self.log('val_acc_step', self.accuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('val_loss_step', val_loss / len(batch['label']))
         all_preds = torch.cat(all_preds, 1)
@@ -572,11 +634,12 @@ class LitOutputBertModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
-                                                                 token_type_ids=query_dict['token_type_ids'],
-                                                                 attention_mask=query_dict['attention_mask'])
-        query_pooler_output, query_retroembeds, query_pre_pooler_output = self.knowledge_infusion(
-            query_dict["input_ids"],query_last_hidden_state,
+        r = self.bert(query_dict['input_ids'],
+                      token_type_ids=query_dict['token_type_ids'],
+                      attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = r.last_hidden_state
+        query_pre_pooler_output, query_retroembeds, query_pooler_output = self.knowledge_infusion(
+            query_dict["input_ids"], query_last_hidden_state,
             attention_mask=query_dict['attention_mask'], retro_embeds=batch["q_retro"])
 
         for i in range(len(batch['label'])):
@@ -584,13 +647,15 @@ class LitOutputBertModel(pl.LightningModule):
 
             response_dict = batch['response_enc_dict'][i]
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
-                                                                           token_type_ids=response_dict[
-                                                                               'token_type_ids'],
-                                                                           attention_mask=response_dict[
-                                                                               'attention_mask'])
-            response_pooler_output, response_retroembeds, response_pre_pooler_output = self.knowledge_infusion(
-                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],retro_embeds=batch["r_retro"][i])
+            r = self.bert(response_dict['input_ids'],
+                          token_type_ids=response_dict[
+                              'token_type_ids'],
+                          attention_mask=response_dict[
+                              'attention_mask'])
+            response_last_hidden_state = r.last_hidden_state
+            response_pre_pooler_output, response_retroembeds, response_pooler_output = self.knowledge_infusion(
+                response_dict["input_ids"], response_last_hidden_state, attention_mask=response_dict['attention_mask'],
+                retro_embeds=batch["r_retro"][i])
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
 
@@ -606,7 +671,7 @@ class LitOutputBertModel(pl.LightningModule):
             all_preds.append(torch.unsqueeze(preds, 1))
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('test_acc_step', self.testaccuracy(preds, labels))
+            self.log('test_acc_step', self.testaccuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('test_loss_step', val_loss / len(batch['label']))
         all_preds = torch.cat(all_preds, 1)
@@ -641,6 +706,12 @@ class LitOutputBertModel(pl.LightningModule):
         return vacc, MAP, MRR, P1, P5
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
+        optimizer = AdamW(self.parameters(), lr=self.lr)
+        scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * self.total_steps), self.total_steps)
         # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
-        return optimizer#[optimizer], [scheduler]
+        scheduler = {
+            'scheduler': scheduler,
+            'interval': 'step',  # or 'epoch'
+            'frequency': 1
+        }
+        return [optimizer], [scheduler]

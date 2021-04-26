@@ -1,0 +1,6 @@
+[{"pad_len": 128, "data_dir": "./data/askubuntu/", "batch_size": 16, "use_cache": true,
+          "cache_dir": "./cache/", "num_workers": 2, "toy_n": 10000},
+         "LitOutputAdapterBertModel", {
+  "injection_indices":[10,11],
+  "ignore_injection": false,
+  "use_summation": false}, "outbert-kadapt-10-11-concat"]

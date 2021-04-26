@@ -5,7 +5,7 @@ from torch.nn import BCEWithLogitsLoss
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR, StepLR
 from torch.utils.data.dataloader import default_collate
-from transformers import BertModel
+from transformers import BertModel, AdamW, get_linear_schedule_with_warmup
 
 from evaluation import Evaluation
 from utils import transfer_batch_to_device
@@ -16,9 +16,8 @@ class LitBertModel(pl.LightningModule):
     def col_fn(x):
         return default_collate(x)
 
-    def __init__(self,name):
+    def __init__(self, name,lr, total_steps, concat=None):
         super().__init__()
-        self.name = name
         self.bert = BertModel.from_pretrained(
             "bert-base-uncased", # Use the 12-layer BERT model, with an uncased vocab.
             output_attentions = False, # Whether the model returns attentions weights.
@@ -31,7 +30,19 @@ class LitBertModel(pl.LightningModule):
         self.testaccuracy = pl.metrics.Accuracy()
         self.val_res = []
         self.eval_res = []
+        self.lr = lr
+        self.total_steps = total_steps
 
+    def configure_optimizers(self):
+        optimizer = AdamW(self.parameters(), lr=self.lr)
+        scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * self.total_steps), self.total_steps)
+        # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
+        scheduler = {
+            'scheduler': scheduler,
+            'interval': 'step',  # or 'epoch'
+            'frequency': 1
+        }
+        return [optimizer], [scheduler]
     def training_step(self, batch, batch_idx):
 
         labels = batch['label'].float()
@@ -39,14 +50,20 @@ class LitBertModel(pl.LightningModule):
         query_dict = batch['query_enc_dict']
         response_dict = batch['response_enc_dict']
 
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
+
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
-        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+        out = self.bert(response_dict['input_ids'],
                                                                        token_type_ids=response_dict['token_type_ids'],
                                                                        attention_mask=response_dict['attention_mask'])
+        response_last_hidden_state = out.last_hidden_state
+        response_pooler_output = out.pooler_output
+
         response_pooler_output = torch.mean(response_last_hidden_state, 1)
         # c = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output))
         # c = self.cosine_sim(query_pooler_output, response_pooler_output)
@@ -66,9 +83,11 @@ class LitBertModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
@@ -77,9 +96,12 @@ class LitBertModel(pl.LightningModule):
             response_dict = batch['response_enc_dict'][i]
 
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+            out = self.bert(response_dict['input_ids'],
                                                                            token_type_ids=response_dict['token_type_ids'],
                                                                            attention_mask=response_dict['attention_mask'])
+
+            response_last_hidden_state = out.last_hidden_state
+            response_pooler_output = out.pooler_output
             response_pooler_output = torch.mean(response_last_hidden_state,1)
 
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
@@ -94,7 +116,7 @@ class LitBertModel(pl.LightningModule):
 
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('val_acc_step', self.accuracy(preds, labels))
+            self.log('val_acc_step', self.accuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('val_loss_step', val_loss/len(batch['label']))
         all_preds = torch.cat(all_preds,1)
@@ -134,9 +156,12 @@ class LitBertModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'])
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
+
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
@@ -145,11 +170,13 @@ class LitBertModel(pl.LightningModule):
             response_dict = batch['response_enc_dict'][i]
 
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+            out = self.bert(response_dict['input_ids'],
                                                                            token_type_ids=response_dict[
                                                                                'token_type_ids'],
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'])
+            response_last_hidden_state = out.last_hidden_state
+            response_pooler_output = out.pooler_output
             response_pooler_output = torch.mean(response_last_hidden_state,1)
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
 
@@ -165,7 +192,7 @@ class LitBertModel(pl.LightningModule):
             all_preds.append(torch.unsqueeze(preds, 1))
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('test_acc_step', self.testaccuracy(preds, labels))
+            self.log('test_acc_step', self.testaccuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('test_loss_step', val_loss / len(batch['label']))
         all_preds = torch.cat(all_preds, 1)
@@ -198,16 +225,4 @@ class LitBertModel(pl.LightningModule):
         self.log('t_p1', P1)
         self.log('t_p5', P5)
         return vacc,MAP,MRR,P1,P5
-    # def configure_optimizers(self):
-    #     optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
-    #     return optimizer
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
-        scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
-        # scheduler  = torch.optim.lr_scheduler.OneCycleLR(optimizer, 5e-3, total_steps=len(self.train_dataloader()), epochs=1, steps_per_epoch=None,
-        #                                     pct_start=0.3, anneal_strategy='linear', cycle_momentum=True,
-        #                                     base_momentum=0.85, max_momentum=0.95, div_factor=25.0,
-        #                                     final_div_factor=10000.0, last_epoch=-1, verbose=False)
-        # return optimizer#[optimizer], [scheduler]
-        return optimizer#[optimizer], [scheduler]

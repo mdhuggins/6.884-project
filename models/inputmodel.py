@@ -12,7 +12,7 @@ from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.dataloader import default_collate
 from tqdm import tqdm
-from transformers import BertTokenizerFast, BertModel
+from transformers import BertTokenizerFast, BertModel, AdamW, get_linear_schedule_with_warmup
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from evaluation import Evaluation
@@ -37,9 +37,19 @@ class LitInputBertModel(pl.LightningModule):
         res['r_retro'] = r_retro
         return res
 
-    def __init__(self,name):
+    def configure_optimizers(self):
+        optimizer = AdamW(self.parameters(), lr=self.lr)
+        scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * self.total_steps), self.total_steps)
+        # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
+        scheduler = {
+            'scheduler': scheduler,
+            'interval': 'step',  # or 'epoch'
+            'frequency': 1
+        }
+        return [optimizer], [scheduler]
+
+    def __init__(self,name,lr, total_steps, concat=None):
         super().__init__()
-        self.name = name
         self.bert = ExtraInputBertModel.from_pretrained(
             "bert-base-uncased", # Use the 12-layer BERT model, with an uncased vocab.
             output_attentions = False, # Whether the model returns attentions weights.
@@ -55,10 +65,12 @@ class LitInputBertModel(pl.LightningModule):
         self.testaccuracy = pl.metrics.Accuracy()
         self.val_res = []
         self.eval_res = []
-        self.concat = False
+        self.concat = concat
         self.sum = True
         self.decompressor = nn.Linear(300,768)
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
+        self.lr = lr
+        self.total_steps = total_steps
         # self.save_hyperparameters()
 
         # self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
@@ -95,15 +107,20 @@ class LitInputBertModel(pl.LightningModule):
         query_dict = batch['query_enc_dict']
         response_dict = batch['response_enc_dict']
 
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'],
                                                                  entity_embeds=batch["q_retro"]
                                                                  )
-        response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
+
+        out = self.bert(response_dict['input_ids'],
                                                                        token_type_ids=response_dict['token_type_ids'],
                                                                        attention_mask=response_dict['attention_mask'],
                                                                        entity_embeds=batch["r_retro"])
+        response_last_hidden_state = out.last_hidden_state
+        response_pooler_output = out.pooler_output
 
         # preds = torch.sigmoid(self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output)))
         a = torch.mean(query_last_hidden_state,1)
@@ -127,11 +144,13 @@ class LitInputBertModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'],
                                                                  entity_embeds=batch["q_retro"]
                                                                  )
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
 
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
@@ -140,12 +159,15 @@ class LitInputBertModel(pl.LightningModule):
 
             response_dict = batch['response_enc_dict'][i]
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+            out = self.bert(response_dict['input_ids'],
                                                                            token_type_ids=response_dict[
                                                                                'token_type_ids'],
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'],
                                                                            entity_embeds=batch["r_retro"][i])
+            response_last_hidden_state = out.last_hidden_state
+            response_pooler_output = out.pooler_output
+
             response_pooler_output = torch.mean(response_last_hidden_state,1)
 
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
@@ -160,7 +182,7 @@ class LitInputBertModel(pl.LightningModule):
 
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('val_acc_step', self.accuracy(preds, labels))
+            self.log('val_acc_step', self.accuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('val_loss_step', val_loss/len(batch['label']))
         all_preds = torch.cat(all_preds,1)
@@ -200,11 +222,13 @@ class LitInputBertModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        query_last_hidden_state, query_pooler_output = self.bert(query_dict['input_ids'],
+        out = self.bert(query_dict['input_ids'],
                                                                  token_type_ids=query_dict['token_type_ids'],
                                                                  attention_mask=query_dict['attention_mask'],
                                                                  entity_embeds=batch["q_retro"]
                                                                  )
+        query_last_hidden_state = out.last_hidden_state
+        query_pooler_output = out.pooler_output
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
@@ -212,12 +236,14 @@ class LitInputBertModel(pl.LightningModule):
 
             response_dict = batch['response_enc_dict'][i]
 
-            response_last_hidden_state, response_pooler_output = self.bert(response_dict['input_ids'],
+            out = self.bert(response_dict['input_ids'],
                                                                            token_type_ids=response_dict[
                                                                                'token_type_ids'],
                                                                            attention_mask=response_dict[
                                                                                'attention_mask'],
                                                                            entity_embeds=batch["r_retro"][i])
+            response_last_hidden_state = out.last_hidden_state
+            response_pooler_output = out.pooler_output
             response_pooler_output = torch.mean(response_last_hidden_state,1)
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.query_rescale_layer(response_pooler_output))
 
@@ -233,7 +259,7 @@ class LitInputBertModel(pl.LightningModule):
             all_preds.append(torch.unsqueeze(preds, 1))
 
             # val_loss =  torch.nn.BCEWithLogitsLoss()(preds,labels)
-            self.log('test_acc_step', self.testaccuracy(preds, labels))
+            self.log('test_acc_step', self.testaccuracy(torch.clamp(preds, 0, 1), labels.int()))
 
         self.log('test_loss_step', val_loss / len(batch['label']))
         all_preds = torch.cat(all_preds, 1)
@@ -268,10 +294,6 @@ class LitInputBertModel(pl.LightningModule):
         return vacc,MAP,MRR,P1,P5
 
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-6)
-        # scheduler = StepLR(optimizer, step_size=25, gamma=0.8)
-        return optimizer#[optimizer], [scheduler]
 
 
 class ExtraInputBertModel(BertModel):
