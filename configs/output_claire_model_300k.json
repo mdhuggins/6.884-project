@@ -1,0 +1,4 @@
+[{"pad_len": 128, "data_dir": "./data/askubuntu/", "batch_size": 16, "use_cache": true,
+          "cache_dir": "./cache/", "num_workers": 0, "toy_n": 10000},
+         "LitBertClaireOutputModel", {"embedding_model":"components/models/linkpredict300000.pth",
+  "embedding_file":"components/embeddings/300000.pickle", "graph_file":"components/graphs/train_g_300000.pickle"}, "basebert"]

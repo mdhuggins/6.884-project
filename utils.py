@@ -153,7 +153,6 @@ def load_vectors_pandas(path, cache="nb.h5",clean_names = False):
             # open("high_ground.txt", "a").write("You were the chosen one.")
             pickle.dump(numberbatch,open(cache,"wb"))
     return numberbatch
-import dask.dataframe as dd
 def get_embeddings(path,cache="wiki.h5"):
     numberbatch = load_vectors_pandas(path, cache, clean_names=True)
     vecs = numberbatch
@@ -164,21 +163,23 @@ def get_embeddings(path,cache="wiki.h5"):
     # ddf = dd.from_pandas(numberbatch, npartitions=20)
     # numberbatch = ddf
     return vecs
-def get_phrase_matcher(numberbatch,nlp):
+def get_phrase_matcher(numberbatch,nlp,cache=False):
     print("Creating matcher")
-    if os.path.exists("matcher"):
+    if os.path.exists("matcher") and cache:
+        print("Loading cache...")
         lock = FileLock("matcher.lock")
         with lock:
             # open("high_ground.txt", "a").write("You were the chosen one.")
             phraseMatcher = pickle.load(open("matcher.bin","rb"))
 
     else:
+        print("Not loading cache...")
         phraseMatcher = PhraseMatcher(nlp.vocab, attr='LOWER')
         terms = numberbatch.keys() if isinstance(numberbatch,dict) else  map(str, numberbatch.index)
         # terms = [str(x) for x in self.numberbatch.index]
-        patterns = [nlp.make_doc(text) for text in terms]
-
-        phraseMatcher.add("Match_By_Phrase", None, *patterns)
+        for text in terms:
+            patterns = [nlp.make_doc(text)]
+            phraseMatcher.add(text, None, *patterns)
         lock = FileLock("matcher.lock")
         with lock:
             # open("high_ground.txt", "a").write("You were the chosen one.")

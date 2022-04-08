@@ -1,10 +1,13 @@
 import sys
 
+
 sys.path.insert(0, 'models/')
 # Default Imports
 import wandb
 import json
 import os
+
+os.environ["WANDB_API_KEY"] = "2aa34769ea8ae63060a052e485040b683333dfed"
 from argparse import ArgumentParser
 import pytorch_lightning as pl
 import torch
@@ -18,6 +21,9 @@ from models.outputadaptermodel import LitOutputAdapterBertModel
 from models.outputmodel import LitOutputBertModel
 from models.basemodel import LitBertModel
 from models.inputmodel import LitInputBertModel
+from models.input_model_2 import LitBertInputModel2
+from models.output_model_2 import LitBertOutputModel2
+from models.output_model_claire import LitBertClaireOutputModel
 
 # torch.autograd.set_detect_anomaly(True)
 
@@ -27,13 +33,13 @@ if __name__ == '__main__':
 
     parser.add_argument('--save_iters', type=int, default=5000,
                         help='The amount of steps to save a model')
-    parser.add_argument('--epochs', type=int, default=5,
+    parser.add_argument('--epochs', type=int, default=3,
                         help='The amount of epochs to run during training')
     parser.add_argument('--data_dir', default="./data/askubuntu/",
                         help='The root of the data directory for the askubuntu dataset')
     parser.add_argument('--model_dir', default="./models/",
                         help='The directory to save trained/checkpointed models')
-    parser.add_argument('-cf', '--config_file',
+    parser.add_argument('config_file',
                         help='The path to a json config file')
     parser.add_argument('--model_save_name', default="test_name",
                         help='The name to save the model with')
@@ -57,7 +63,7 @@ if __name__ == '__main__':
                         help="The amount of padding that will be added or the length that we will cut the sequences to.")
     parser.add_argument('--gradient_acc_batches', default=None, type=int,
                         help="The amount batches that we accumulate the gradient to")
-    parser.add_argument('--toy_n', default=None, type=int,
+    parser.add_argument('--toy_n', default=1000, type=int,
                         help="N amount of examples will be used in training.")
     parser.add_argument('--num_workers', default=0, type=int,
                         help="N amount of workers for dataloading")
@@ -94,7 +100,10 @@ if __name__ == '__main__':
         "LitOutputAdapterBertModel": LitOutputAdapterBertModel,
         "LitOutputBertModel": LitOutputBertModel,
         "LitBertModel": LitBertModel,
-        "LitInputBertModel": LitInputBertModel
+        "LitBertInputModel2": LitBertInputModel2,
+        "LitBertOutputModel2": LitBertOutputModel2,
+        "LitInputBertModel": LitInputBertModel,
+        "LitBertClaireOutputModel":LitBertClaireOutputModel
     }
     datasets_and_models = [json.load(open(args.config_file))]
 
@@ -135,15 +144,13 @@ if __name__ == '__main__':
 
         print("Training", model_name)
         print("Initializing the trainer")
-        exp = wandb.init(project="knowledgeinjection", name=model_name)
-        wandb.watch(model, log="all")
-        logger = WandbLogger(name=model_name, project="knowledgeinjection", experiment=exp)
+        logger = WandbLogger(project="knowledgeinjection")
         trainer = pl.Trainer(callbacks=callbacks, gpus=args.gpus if args.use_gpu else None,
-                             auto_select_gpus=args.use_gpu, max_epochs=epochs, val_check_interval=0.25,
+                             max_epochs=epochs, val_check_interval=0.5,
                              logger=logger,
-                             precision=fp16, log_every_n_steps=10)
+                             precision=fp16, log_every_n_steps=10,strategy="ddp" if args.use_gpu else None,
+                             num_sanity_val_steps=0)
         print("Fitting...")
-
         trainer.fit(model, datamodule=dataset)
         print("Testing...")
         trainer.test(datamodule=dataset)

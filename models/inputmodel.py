@@ -17,7 +17,6 @@ from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from evaluation import Evaluation
 from utils import transfer_batch_to_device, load_vectors_pandas, get_retro_embeds
-import dask.dataframe as dd
 
 
 class LitInputBertModel(pl.LightningModule):
