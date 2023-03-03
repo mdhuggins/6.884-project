@@ -1,4 +1,20 @@
-[{"pad_len": 128, "data_dir": "./data/askubuntu/", "batch_size": 16, "use_cache": true,
-          "cache_dir": "./cache/", "num_workers": 0, "toy_n": 10000},
-         "LitBertClaireOutputModel", {"embedding_model":"components/models/linkpredict300000.pth",
-  "embedding_file":"components/embeddings/300000.pickle", "graph_file":"components/graphs/train_g_300000.pickle"}, "basebert"]
+[
+  {
+    "pad_len": 128,
+    "data_dir": "./data/askubuntu/",
+    "batch_size": 16,
+    "use_cache": true,
+    "cache_dir": "./cache/",
+    "num_workers": 0,
+    "toy_n": 10000
+  },
+  "LitBertClaireOutputModel",
+  {
+    "embedding_model": "components/models/linkpredict300000_seed600_epochs3000_lr0.005_reg0.0005_drop0.0_gbs8192.pth",
+    "embedding_file": "components/embeddings/test_embs_seed600_300000.pickle",
+    "graph_file": "components/graphs/test_g_300000.pickle",
+    "use_model": false
+  },
+  "basebert"
+]
+

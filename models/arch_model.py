@@ -1,25 +1,17 @@
-import os
-import pickle
-import sys
-
 import pytorch_lightning as pl
 import spacy
 import torch
-from pandas import Series
 from torch import nn as nn
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR, StepLR
 from torch.utils.data.dataloader import default_collate
 from torchmetrics import Accuracy
-from tqdm import tqdm
 from transformers import BertModel, AdamW, get_linear_schedule_with_warmup, BertTokenizer
 
-from components.model_file import LinkPredict
-
-sys.path.insert(0, 'components/')
-
+from configuration_archbert import ArchBertConfig
 from evaluation import Evaluation
+from modeling_bert_architecture_inj import ArchBertModel
 from utils import transfer_batch_to_device, get_embeddings, get_phrase_matcher
 import numpy as np
 def find_sub_list(sl,l):
@@ -32,20 +24,17 @@ def find_sub_list(sl,l):
     return results
 
 
-class LitBertClaireOutputModel(pl.LightningModule):
+class LitBertArchModel(pl.LightningModule):
     @staticmethod
     def col_fn(x):
         return default_collate(x)
 
-    def __init__(self, name, lr, total_steps, concat=None,use_model=False, embedding_model="", embedding_file="", graph_file=""):
+    def __init__(self, name, lr, total_steps, concat=True):
         super().__init__()
-        self.bert = BertModel.from_pretrained(
-            "bert-base-uncased",  # Use the 12-layer BERT model, with an uncased vocab.
-            output_attentions=False,  # Whether the model returns attentions weights.
-            output_hidden_states=False,  # Whether the model returns all hidden-states.
-        )
+
         self.query_rescale_layer = nn.Linear(768, 768)
         self.knowledge_infuser = nn.Linear(768+300,768)
+        self.knowledge_scaler = nn.Linear(300,768)
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
         self.accuracy = Accuracy()
@@ -55,33 +44,18 @@ class LitBertClaireOutputModel(pl.LightningModule):
         self.lr = lr
         self.total_steps = total_steps
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-        self.embeddings = pickle.load(open(embedding_file,'rb'))
-        self.graph = pickle.load(open(graph_file,'rb'))
-
-        self.rgcn = torch.load(embedding_model)
-        # model =  LinkPredict(self.graph.num_nodes(),
-        #             125,
-        #             12 * 34,
-        #             34,
-        #             node_initialization=np.zeros([20885, 100])
-        #             )
-        # model.load_state_dict(test["state_dict"])
-        # self.rgcn = model
-        # self.emb_size = 0
-
-        # if os.path.exists(embedding_file+"_mp.temp"):
-        #     print("Loading cache...",embedding_file+"_mp.temp")
-        #     mp = pickle.load(open(embedding_file+"_mp.temp",'rb'))
-        # else:
-        print("Creating from scratch...",embedding_file+"_mp.temp")
-
-        self.embedding_resize = nn.Linear(self.embeddings.shape[1],300)#TODO FIX THIS AUTOMATICALLY
-
-        self.embedding_map = dict(zip(self.rgcn.vocabulary,self.rgcn.vocabulary))
+        self.embedding_map = get_embeddings("models/graphembeddings/numberbatch-en-19.08.txt",cache="numberbatch.h5")
         self.nlp = spacy.load('en_core_web_sm')
         self.matcher = get_phrase_matcher(numberbatch=self.embedding_map,nlp=self.nlp)
-        self.dropout = nn.Dropout(0.1)
-        self.use_model = use_model
+        self.concat = concat
+        config = ArchBertConfig.from_pretrained("bert-base-uncased")
+        config.output_attentions=False
+        config.output_hidden_states=False
+        config.k_emb_dim=300
+        self.bert = ArchBertModel.from_pretrained(
+            "bert-base-uncased",  # Use the 12-layer BERT model, with an uncased vocab.
+            config=config
+        )
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.lr)
@@ -94,33 +68,16 @@ class LitBertClaireOutputModel(pl.LightningModule):
         }
         return [optimizer], [scheduler]
 
-    def refresh_embeddings(self):
-        d = self.device
-        nids = torch.arange(0, self.graph.num_nodes(),device=d)
-        self.graph = self.graph.to(d)
-        self.graph.edata['norm'] = torch.zeros(self.graph.num_edges(), 1,device=d)
-        self.rgcn.rgcn = self.rgcn.rgcn.to(d)
-        embeddings = self.rgcn.rgcn(self.graph, nids)
-        embeddings = embeddings.to(self.device)
-        # self.rgcn = self.rgcn.to("cpu")
-        return embeddings
 
-    def get_knowledge(self,input_ids):
+    def get_and_infuse_knowledge(self,input_ids):
         sentences = [self.tokenizer.decode(x,skip_special_tokens=True,clean_up_tokenization_spaces=False)for x in input_ids.tolist()]
         k_embeds_list = []
-        if self.use_model:
-            embeddings = self.refresh_embeddings()
-        else:
-            embeddings = self.embeddings
-
         for sentence_id in range(len(sentences)):
             sentence = sentences[sentence_id]
             bert_ids_sentence = input_ids[sentence_id,:].tolist()
+            k_embs = [np.zeros((1,300)) for i in range(len(bert_ids_sentence))]
             doc = self.nlp(sentence)
             matches_dict = {}
-            k_embs = [torch.zeros((1,embeddings.shape[1])) for i in range(len(bert_ids_sentence))]
-
-
             for match_id, start, end in self.matcher(doc):
                 string_id = self.nlp.vocab.strings[match_id]  # Get string representation
                 span = doc[start:end].text # The matched span
@@ -135,15 +92,10 @@ class LitBertClaireOutputModel(pl.LightningModule):
                     continue
                 results = results[matches_dict[string_id]]
                 for rep_idx in range(results[0],results[1]+1):
-                    id = self.rgcn.vocabulary.index(string_id)
-                    k_embs[rep_idx] = embeddings[id,:].unsqueeze(0)
-            for i in range(len(k_embs)):
-                k_embs[i] = k_embs[i].to(self.bert.embeddings.word_embeddings.weight.device)
-            k_embeds_list.append(torch.cat(k_embs))
-        k_embeds = torch.stack(k_embeds_list,dim=0).to(self.bert.embeddings.word_embeddings.weight.device)
-        k_embeds = self.embedding_resize(k_embeds.float())
-        k_embeds = torch.relu(k_embeds)
-        # k_embeds = self.dropout(k_embeds)
+                    k_embs[rep_idx] = np.expand_dims(self.embedding_map[string_id].to_numpy(),axis=0)
+            k_embeds_list.append(torch.tensor(k_embs))
+        k_embeds = torch.cat(k_embeds_list,dim=1).to(self.bert.embeddings.word_embeddings.weight.device).transpose(0,1)
+        k_embeds = k_embeds.float()
         # print("here")
         return k_embeds
     def training_step(self, batch, batch_idx):
@@ -152,20 +104,22 @@ class LitBertClaireOutputModel(pl.LightningModule):
 
         query_dict = batch['query_enc_dict']
         response_dict = batch['response_enc_dict']
-        knowledge_embeds = self.get_knowledge(query_dict['input_ids'])
+        k_embs = self.get_and_infuse_knowledge(query_dict['input_ids'])
         out = self.bert(query_dict['input_ids'],
                         token_type_ids=query_dict['token_type_ids'],
-                        attention_mask=query_dict['attention_mask'])
+                        attention_mask=query_dict['attention_mask'],
+                        k_embs=k_embs)
         query_last_hidden_state = out.last_hidden_state
-        query_last_hidden_state = self.knowledge_infuser(torch.cat([knowledge_embeds,query_last_hidden_state],dim=2).float())
-        query_pooler_output = torch.mean(query_last_hidden_state, 1)
+        query_pooler_output = out.pooler_output
 
-        knowledge_embeds = self.get_knowledge(response_dict['input_ids'])
+        query_pooler_output = torch.mean(query_last_hidden_state, 1)
+        k_embs=self.get_and_infuse_knowledge(response_dict['input_ids'])
         out = self.bert(response_dict['input_ids'],
                         token_type_ids=response_dict['token_type_ids'],
-                        attention_mask=response_dict['attention_mask'])
+                        attention_mask=response_dict['attention_mask'],
+                        k_embs=k_embs)
         response_last_hidden_state = out.last_hidden_state
-        response_last_hidden_state = self.knowledge_infuser(torch.cat([knowledge_embeds,response_last_hidden_state],dim=2).float())
+        response_pooler_output = out.pooler_output
 
         response_pooler_output = torch.mean(response_last_hidden_state, 1)
         # c = self.cosine_sim(self.query_rescale_layer(query_pooler_output), self.response_rescale_layer(response_pooler_output))
@@ -186,13 +140,13 @@ class LitBertClaireOutputModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        knowledge_embeds = self.get_knowledge(query_dict['input_ids'])
+        k_embs = self.get_and_infuse_knowledge(query_dict['input_ids'])
         out = self.bert(query_dict['input_ids'],
                         token_type_ids=query_dict['token_type_ids'],
-                        attention_mask=query_dict['attention_mask'])
+                        attention_mask=query_dict['attention_mask'],
+                        k_embs=k_embs)
         query_last_hidden_state = out.last_hidden_state
-        query_last_hidden_state = self.knowledge_infuser(
-            torch.cat([knowledge_embeds, query_last_hidden_state], dim=2).float())
+        query_pooler_output = out.pooler_output
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
@@ -200,16 +154,15 @@ class LitBertClaireOutputModel(pl.LightningModule):
 
             response_dict = batch['response_enc_dict'][i]
 
-            knowledge_embeds = self.get_knowledge(response_dict['input_ids'])
+            k_embs = self.get_and_infuse_knowledge(response_dict['input_ids'])
             out = self.bert(response_dict['input_ids'],
                             token_type_ids=response_dict['token_type_ids'],
-                            attention_mask=response_dict['attention_mask'])
+                            attention_mask=response_dict['attention_mask'],
+                            k_embs=k_embs)
+
             response_last_hidden_state = out.last_hidden_state
-            response_last_hidden_state = self.knowledge_infuser(
-                torch.cat([knowledge_embeds, response_last_hidden_state], dim=2).float())
-
+            response_pooler_output = out.pooler_output
             response_pooler_output = torch.mean(response_last_hidden_state, 1)
-
 
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
@@ -262,13 +215,14 @@ class LitBertClaireOutputModel(pl.LightningModule):
         all_preds = []
         val_loss = 0
         query_dict = batch['query_enc_dict']
-        knowledge_embeds = self.get_knowledge(query_dict['input_ids'])
+        k_embs = self.get_and_infuse_knowledge(query_dict['input_ids'])
         out = self.bert(query_dict['input_ids'],
                         token_type_ids=query_dict['token_type_ids'],
-                        attention_mask=query_dict['attention_mask'])
+                        attention_mask=query_dict['attention_mask'],
+                        k_embs=k_embs)
         query_last_hidden_state = out.last_hidden_state
-        query_last_hidden_state = self.knowledge_infuser(
-            torch.cat([knowledge_embeds, query_last_hidden_state], dim=2).float())
+        query_pooler_output = out.pooler_output
+
         query_pooler_output = torch.mean(query_last_hidden_state, 1)
 
         for i in range(len(batch['label'])):
@@ -276,16 +230,14 @@ class LitBertClaireOutputModel(pl.LightningModule):
 
             response_dict = batch['response_enc_dict'][i]
 
-            knowledge_embeds = self.get_knowledge(response_dict['input_ids'])
+            k_embs = self.get_and_infuse_knowledge(response_dict['input_ids'])
             out = self.bert(response_dict['input_ids'],
                             token_type_ids=response_dict['token_type_ids'],
-                            attention_mask=response_dict['attention_mask'])
+                            attention_mask=response_dict['attention_mask'],
+                            k_embs=k_embs)
             response_last_hidden_state = out.last_hidden_state
-            response_last_hidden_state = self.knowledge_infuser(
-                torch.cat([knowledge_embeds, response_last_hidden_state], dim=2).float())
-
+            response_pooler_output = out.pooler_output
             response_pooler_output = torch.mean(response_last_hidden_state, 1)
-
             preds = self.cosine_sim(self.query_rescale_layer(query_pooler_output),
                                     self.query_rescale_layer(response_pooler_output))
 

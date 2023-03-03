@@ -27,10 +27,11 @@ class RGCN(nn.Module):
         if num_bases == -1:
             num_bases = num_rels
         self.emb = nn.Embedding(num_nodes, e_dim)
-        self.emb.weight = nn.Parameter(th.tensor(node_initialization, dtype=th.float32), requires_grad=True)
+        if node_initialization is not None:
+            self.emb.weight = nn.Parameter(th.tensor(node_initialization, dtype=th.float32), requires_grad=True)
         self.conv1 = RelGraphConv(h_dim, h_dim, num_rels, regularizer,
-                                  num_bases, self_loop=self_loop)
-        self.conv2 = RelGraphConv(h_dim, out_dim, num_rels, regularizer, num_bases, self_loop=self_loop)
+                                  num_bases, self_loop=self_loop,low_mem=True)
+        self.conv2 = RelGraphConv(h_dim, out_dim, num_rels, regularizer, num_bases, self_loop=self_loop,low_mem=True)
         self.dropout = nn.Dropout(dropout)
         self.ns_mode = ns_mode
 

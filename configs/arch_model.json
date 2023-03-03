@@ -1,0 +1,2 @@
+[{"pad_len": 128, "data_dir": "./data/askubuntu/", "batch_size": 16, "use_cache": true, "num_workers": 0, "toy_n": 10000},
+         "LitBertArchModel", {}, "basebert"]

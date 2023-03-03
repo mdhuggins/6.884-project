@@ -49,6 +49,7 @@ class LitBertOutputModel2(pl.LightningModule):
         self.nlp = spacy.load('en_core_web_sm')
         self.matcher = get_phrase_matcher(numberbatch=self.embedding_map,nlp=self.nlp)
 
+        self.embedding_resize = torch.nn.Linear(300,300)
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.lr)
@@ -88,6 +89,8 @@ class LitBertOutputModel2(pl.LightningModule):
                     k_embs[rep_idx] = np.expand_dims(self.embedding_map[string_id].to_numpy(),axis=0)
             k_embeds_list.append(torch.tensor(k_embs))
         k_embeds = torch.cat(k_embeds_list,dim=1).to(self.bert.embeddings.word_embeddings.weight.device).transpose(0,1)
+        k_embeds = self.embedding_resize(k_embeds.float())
+
         # print("here")
         return k_embeds
     def training_step(self, batch, batch_idx):

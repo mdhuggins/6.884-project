@@ -7,7 +7,7 @@
     "num_workers": 0,
     "toy_n": 10000
   },
-  "LitBertClaireOutputModel",
+  "LitBertClaireInputModel",
   {
     "embedding_model": "components/models/linkpredict100000_seed8888_epochs10000_lr0.005_reg0.0005_drop0.0_gbs8192.pth",
     "embedding_file": "components/embeddings/test_embs_seed8888_100000.pickle",

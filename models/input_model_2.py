@@ -27,7 +27,7 @@ class LitBertInputModel2(pl.LightningModule):
     def col_fn(x):
         return default_collate(x)
 
-    def __init__(self, name, lr, total_steps, concat=None):
+    def __init__(self, name, lr, total_steps, concat=True):
         super().__init__()
         self.bert = BertModel.from_pretrained(
             "bert-base-uncased",  # Use the 12-layer BERT model, with an uncased vocab.
@@ -36,6 +36,7 @@ class LitBertInputModel2(pl.LightningModule):
         )
         self.query_rescale_layer = nn.Linear(768, 768)
         self.knowledge_infuser = nn.Linear(768+300,768)
+        self.knowledge_scaler = nn.Linear(300,768)
         self.cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.save_hyperparameters()
         self.accuracy = Accuracy()
@@ -48,7 +49,7 @@ class LitBertInputModel2(pl.LightningModule):
         self.embedding_map = get_embeddings("models/graphembeddings/numberbatch-en-19.08.txt",cache="numberbatch.h5")
         self.nlp = spacy.load('en_core_web_sm')
         self.matcher = get_phrase_matcher(numberbatch=self.embedding_map,nlp=self.nlp)
-
+        self.concat = concat
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.lr)
@@ -89,7 +90,11 @@ class LitBertInputModel2(pl.LightningModule):
             k_embeds_list.append(torch.tensor(k_embs))
         k_embeds = torch.cat(k_embeds_list,dim=1).to(self.bert.embeddings.word_embeddings.weight.device).transpose(0,1)
         model_embeds = self.bert.embeddings(input_ids)
-        inputs_embeds = self.knowledge_infuser(torch.cat([k_embeds,model_embeds],dim=2).float())
+        if self.concat:
+            inputs_embeds = self.knowledge_infuser(torch.cat([k_embeds,model_embeds],dim=2).float())
+        else:
+            inputs_embeds = self.knowledge_scaler(k_embeds.float())+model_embeds
+
         # print("here")
         return inputs_embeds
     def training_step(self, batch, batch_idx):
